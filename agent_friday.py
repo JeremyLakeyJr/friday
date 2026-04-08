@@ -12,6 +12,7 @@ Run:
   uv run agent_friday.py console  – text-only console mode
 """
 
+import os
 import logging
 import subprocess
 
@@ -21,17 +22,17 @@ from livekit.agents.voice import Agent, AgentSession
 from livekit.agents.llm import mcp
 
 # Plugins
-from livekit.plugins import groq, openai as lk_openai, sarvam, silero
+from livekit.plugins import google as lk_google, openai as lk_openai, sarvam, silero
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
 
 STT_PROVIDER       = "sarvam"
-LLM_PROVIDER       = "groq"
+LLM_PROVIDER       = "gemini"
 TTS_PROVIDER       = "openai"
 
-GROQ_LLM_MODEL     = "llama-3.1-8b-instant"
+GEMINI_LLM_MODEL   = "gemini-2.5-flash"
 OPENAI_LLM_MODEL   = "gpt-4o"
 
 OPENAI_TTS_MODEL   = "tts-1"
@@ -202,9 +203,9 @@ def _build_llm():
     if LLM_PROVIDER == "openai":
         logger.info("LLM → OpenAI (%s)", OPENAI_LLM_MODEL)
         return lk_openai.LLM(model=OPENAI_LLM_MODEL)
-    elif LLM_PROVIDER == "groq":
-        logger.info("LLM → Groq (%s)", GROQ_LLM_MODEL)
-        return groq.LLM(model=GROQ_LLM_MODEL)
+    elif LLM_PROVIDER == "gemini":
+        logger.info("LLM → Google Gemini (%s)", GEMINI_LLM_MODEL)
+        return lk_google.LLM(model=GEMINI_LLM_MODEL, api_key=os.getenv("GOOGLE_API_KEY"))
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: {LLM_PROVIDER!r}")
 
