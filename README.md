@@ -18,6 +18,7 @@ It can browse the web, run bash commands, search the internet, and more — all 
 | World news | `get_world_news` | Live RSS (BBC, CNBC, NYT, Al Jazeera) |
 | Fetch a URL | `fetch_url` | Raw page content |
 | System info | `get_system_info`, `get_current_time` | Host machine details |
+| 🧠 Persistent memory | `read_memory`, `write_memory`, `append_to_memory` | Markdown brain & user profile |
 | 🎙️ Voice messages | — | Telegram voice notes transcribed via OpenAI Whisper API |
 
 All tools run **locally** on your machine. No paid third-party APIs required (beyond your chosen LLM).
@@ -33,9 +34,10 @@ Telegram Bot  (agent.py)
        ↓  voice note → OpenAI Whisper API → text
 LLM  (Gemini / OpenAI / GitHub Copilot / Ollama)
        ↓  tool calls
-Tool layer  (bash · browser · web search · news · system)
-       ↓
-Your machine
+Tool layer  (bash · browser · web search · news · system · memory)
+       ↓                                                    ↓
+Your machine                                        memory/brain.md
+                                                    memory/user_profile.md
 ```
 
 ---
@@ -92,7 +94,24 @@ Override the default model with `LLM_MODEL=your-model-name`.
 
 ---
 
-## Telegram commands
+## Persistent Memory
+
+Friday maintains a markdown-based memory that persists across conversations, stored in the `memory/` directory:
+
+| File | Purpose |
+|---|---|
+| `memory/brain.md` | Friday's general knowledge, learned facts, and notes |
+| `memory/user_profile.md` | What Friday knows about *you* — name, preferences, habits, projects, technical setup |
+
+**How it works:**
+- At the start of every turn, both files are read and injected into Friday's system prompt so it always has context.
+- When Friday learns something new about you (your name, a preference, a project), it silently calls `append_to_memory` to save it.
+- Friday can also rewrite a file entirely with `write_memory` to keep memories clean and organised.
+- You can read or edit these files directly — they're plain markdown.
+
+---
+
+
 
 | Command | Description |
 |---|---|
