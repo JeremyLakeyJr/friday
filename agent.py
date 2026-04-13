@@ -10,6 +10,7 @@ Features:
   - World news (RSS feeds)
   - System info
   - Configurable LLM: gemini | openai | copilot | ollama
+  - Voice messages (transcribed via OpenAI Whisper API)
 
 Run:
   uv run friday_agent
@@ -29,6 +30,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -54,6 +56,16 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("friday-agent")
+
+# Lazy OpenAI client for Whisper transcription (created on first voice message)
+_openai_client: AsyncOpenAI | None = None
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+    return _openai_client
 
 
 # ---------------------------------------------------------------------------
@@ -238,8 +250,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Control a web browser (Playwright)\n"
         "• Search the web (DuckDuckGo)\n"
         "• Fetch world news\n"
-        "• Read & write files\n\n"
-        "Just tell me what to do.\n"
+        "• Read & write files\n"
+        "• 🎙️ Understand voice messages (transcribed via Whisper)\n\n"
+        "Just tell me what to do — by text *or* voice.\n"
         "Use /reset to clear conversation history.\n"
         "Use /tools to see available tools.",
         parse_mode=ParseMode.MARKDOWN,
@@ -258,6 +271,21 @@ async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"*Available tools:*\n{lines}", parse_mode=ParseMode.MARKDOWN)
 
 
+async def _send_responses(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    responses: list[tuple[str, bytes | None]],
+) -> None:
+    """Send agent responses (text and/or photos) back to the chat."""
+    chat_id = update.effective_chat.id
+    for text, image_bytes in responses:
+        if image_bytes:
+            await context.bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=text)
+        elif text:
+            for chunk in _split_text(text):
+                await update.message.reply_text(chunk)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_text = update.message.text or ""
@@ -274,13 +302,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Error: {e}")
         return
 
-    for text, image_bytes in responses:
-        if image_bytes:
-            await context.bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=text)
-        elif text:
-            # Telegram message max length is 4096; split if needed
-            for chunk in _split_text(text):
-                await update.message.reply_text(chunk)
+    await _send_responses(update, context, responses)
+
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Transcribe a Telegram voice note via OpenAI Whisper, then run the agent."""
+    chat_id = update.effective_chat.id
+    if not config.OPENAI_API_KEY:
+        await update.message.reply_text(
+            "⚠️ Voice transcription requires OPENAI_API_KEY to be set in .env"
+        )
+        return
+
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    try:
+        voice_file = await update.message.voice.get_file()
+        voice_bytes = await voice_file.download_as_bytearray()
+
+        audio_io = io.BytesIO(bytes(voice_bytes))
+        audio_io.name = "voice.ogg"
+
+        transcript = await _get_openai_client().audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_io,
+        )
+        user_text = transcript.text.strip()
+        logger.info("Voice → text: %r", user_text)
+    except Exception as e:
+        logger.exception("Voice transcription failed")
+        await update.message.reply_text(f"⚠️ Transcription error: {e}")
+        return
+
+    if not user_text:
+        await update.message.reply_text("⚠️ Could not understand the voice message.")
+        return
+
+    # Echo the transcription so the user knows what was heard
+    await update.message.reply_text(f"🎙️ _{user_text}_", parse_mode=ParseMode.MARKDOWN)
+
+    try:
+        responses = await _run_agent_turn(chat_id, user_text)
+    except Exception as e:
+        logger.exception("Agent turn failed (voice)")
+        await update.message.reply_text(f"⚠️ Error: {e}")
+        return
+
+    await _send_responses(update, context, responses)
 
 
 def _split_text(text: str, max_len: int = 4000) -> list[str]:
@@ -307,6 +375,7 @@ def main():
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
 
     logger.info("Friday agent starting (LLM_PROVIDER=%s)…", config.LLM_PROVIDER)
     app.run_polling(drop_pending_updates=True)
