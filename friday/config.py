@@ -13,9 +13,24 @@ class Config:
     SERVER_NAME: str = os.getenv("SERVER_NAME", "Friday")
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
 
-    # External API keys (add as needed)
+    # LLM provider: "gemini" | "openai" | "copilot" | "ollama"
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "")  # override default model for provider
+
+    # LLM API keys
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    SEARCH_API_KEY: str = os.getenv("SEARCH_API_KEY", "")
+    GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
+
+    # GitHub Copilot LLM (uses GitHub Models API, no extra cost beyond Copilot subscription)
+    GH_TOKEN: str = os.getenv("GH_TOKEN", "")
+    COPILOT_MODEL: str = os.getenv("COPILOT_MODEL", "gpt-4o")
+
+    # Ollama (self-hosted, no API key)
+    OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3")
+
+    # Telegram bot
+    TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
 
 
 config = Config()

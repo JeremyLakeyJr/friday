@@ -1,24 +1,40 @@
 [project]
 name = "friday-tony-stark-demo"
-version = "0.1.0"
-description = "Friday — A Tony Stark-inspired MCP server"
+version = "0.2.0"
+description = "Friday — Autonomous AI agent with Telegram, browser, and bash access"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp",
     "httpx",
+    "python-dotenv",
+    # Telegram agent
+    "python-telegram-bot>=21.0",
+    # Browser automation
+    "playwright",
+    # Web search (no API key required)
+    "duckduckgo-search>=6.0",
+    # LLM providers
+    "openai>=1.0",
+    "ollama>=0.3",
+    "google-generativeai",
+]
+
+[project.optional-dependencies]
+# Voice interface (LiveKit + STT/TTS) — heavy deps, install separately if needed
+voice = [
     "livekit-agents[deepgram,groq,openai,sarvam,silero]>=1.5.1",
     "livekit-plugins-google>=1.5.1",
-    "python-dotenv",
 ]
 
 [project.scripts]
 friday = "server:main"
-friday_voice = "agent_friday:dev" # Points to the wrapper
+friday_voice = "agent_friday:dev"
+friday_agent = "agent:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["server.py"]
+packages = ["server.py", "agent.py"]

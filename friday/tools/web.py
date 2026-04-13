@@ -83,8 +83,25 @@ def register(mcp):
 
     @mcp.tool()
     async def search_web(query: str) -> str:
-        """Search the web for a given query and return a summary of results."""
-        return f"[stub] Search results for: {query}"
+        """
+        Search the web using DuckDuckGo (no API key required).
+        Returns top 5 results with title, URL, and snippet.
+        """
+        try:
+            from duckduckgo_search import DDGS
+            results = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=5):
+                    results.append(
+                        f"**{r.get('title', 'No title')}**\n"
+                        f"{r.get('body', '')[:200]}\n"
+                        f"URL: {r.get('href', '')}"
+                    )
+            if not results:
+                return "No results found."
+            return "\n\n".join(results)
+        except Exception as e:
+            return f"Search failed: {e}"
 
     @mcp.tool()
     async def fetch_url(url: str) -> str:

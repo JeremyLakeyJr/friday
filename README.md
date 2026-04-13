@@ -1,56 +1,40 @@
-# F.R.I.D.A.Y. — Tony Stark Demo
+# Friday — Autonomous AI Agent
 
 > *"Fully Responsive Intelligent Digital Assistant for You"*
 
-A Tony Stark-inspired AI assistant split into two cooperating pieces:
-
-| Component | What it is |
-|-----------|-----------|
-| **MCP Server** (`uv run friday`) | A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes tools (news, web search, system info, …) over SSE. Think of it as the Stark Industries backend — it does the actual work. |
-| **Voice Agent** (`uv run friday_voice`) | A [LiveKit Agents](https://github.com/livekit/agents) voice pipeline that listens to your microphone, reasons with an LLM (Gemini 2.5 Flash by default), and speaks back with OpenAI TTS — all while pulling tools from the MCP server in real time. |
-
-Demo: [Instagram reel](https://www.instagram.com/p/DW2HjYtkwg_/)
-
-[![Demo Video Guide](https://img.youtube.com/vi/mMY9swqe3BI/maxresdefault.jpg)](https://www.youtube.com/watch?v=mMY9swqe3BI)
+An autonomous AI agent that lives on your machine and is accessible via **Telegram**.  
+It can browse the web, run bash commands, search the internet, and more — all triggered by a text message.
 
 ---
 
-## How it works
+## What it can do
 
-```
-Microphone ──► STT (Sarvam Saaras v3)
-                    │
-                    ▼
-             LLM (Gemini 2.5 Flash)  ◄──────► MCP Server (FastMCP / SSE)
-                    │                              ├─ get_world_news
-                    ▼                              ├─ open_world_monitor
-             TTS (OpenAI nova)                     ├─ search_web
-                    │                              └─ …more tools
-                    ▼
-             Speaker / LiveKit room
-```
+| Capability | Tool | Notes |
+|---|---|---|
+| Run shell commands | `run_bash` | Full bash access, 30s timeout |
+| Read / write files | `read_file`, `write_file` | Local filesystem |
+| Control a browser | `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_get_text` | Headless Chromium via Playwright |
+| Search the web | `search_web` | DuckDuckGo — no API key |
+| World news | `get_world_news` | Live RSS (BBC, CNBC, NYT, Al Jazeera) |
+| Fetch a URL | `fetch_url` | Raw page content |
+| System info | `get_system_info`, `get_current_time` | Host machine details |
 
-The voice agent connects to the MCP server via SSE at `http://127.0.0.1:8000/sse` (auto-resolved to the Windows host IP when running inside WSL).
+All tools run **locally** on your machine. No paid third-party APIs required (beyond your chosen LLM).
 
 ---
 
-## Project structure
+## Architecture
 
 ```
-friday-tony-stark-demo/
-├── server.py           # uv run friday  → starts the MCP server (SSE on :8000)
-├── agent_friday.py     # uv run friday_voice → starts the LiveKit voice agent
-├── pyproject.toml
-├── .env.example        # copy → .env and fill in your keys
-│
-└── friday/             # MCP server package
-    ├── config.py       # env-var loading & app-wide settings
-    ├── tools/          # MCP tools (callable by the LLM)
-    │   ├── web.py      # search_web, fetch_url, get_world_news, open_world_monitor
-    │   ├── system.py   # get_current_time, get_system_info
-    │   └── utils.py    # format_json, word_count
-    ├── prompts/        # MCP prompt templates (summarize, explain_code, …)
-    └── resources/      # MCP resources exposed to clients (friday://info)
+You (Telegram)
+      ↓
+Telegram Bot  (agent.py)
+      ↓
+LLM  (Gemini / OpenAI / GitHub Copilot / Ollama)
+      ↓  tool calls
+Tool layer  (bash · browser · web search · news · system)
+      ↓
+Your machine
 ```
 
 ---
@@ -60,84 +44,76 @@ friday-tony-stark-demo/
 ### 1. Prerequisites
 
 - Python ≥ 3.11
-- [`uv`](https://github.com/astral-sh/uv) — `pip install uv` or `curl -Lsf https://astral.sh/uv/install.sh | sh`
-- A [LiveKit Cloud](https://cloud.livekit.io) project (free tier works)
+- [`uv`](https://github.com/astral-sh/uv) — `pip install uv`
+- A Telegram bot token from [@BotFather](https://t.me/BotFather) (free)
+- API key for your chosen LLM (or a local Ollama install)
 
 ### 2. Clone & install
 
 ```bash
-git clone https://github.com/SAGAR-TAMANG/friday-tony-stark-demo.git
-cd friday-tony-stark-demo
-uv sync          # creates .venv and installs all dependencies
+git clone https://github.com/JeremyLakeyJr/friday.git
+cd friday
+uv sync                                  # core agent deps
+uv run playwright install chromium       # download Chromium for browser tools
+# Optional: voice interface
+# uv sync --extra voice
 ```
 
-### 3. Set up environment
+### 3. Configure
 
 ```bash
 cp .env.example .env
-# Open .env and fill in your API keys (see the section below)
+# Edit .env — at minimum set TELEGRAM_TOKEN and one LLM provider key
 ```
 
-### 4. Run — two terminals
-
-**Terminal 1 — MCP server** (must start first)
+### 4. Run
 
 ```bash
+uv run friday_agent
+```
+
+The bot starts polling Telegram. Open your bot in the Telegram app and send it a message.
+
+---
+
+## LLM Providers
+
+Set `LLM_PROVIDER` in `.env`:
+
+| Value | What it uses | Key needed |
+|---|---|---|
+| `gemini` *(default)* | Google Gemini 2.5 Flash | `GOOGLE_API_KEY` |
+| `openai` | OpenAI GPT-4o | `OPENAI_API_KEY` |
+| `copilot` | GitHub Models API (Copilot) | `GH_TOKEN` |
+| `ollama` | Self-hosted Ollama | none (set `OLLAMA_URL`) |
+
+Override the default model with `LLM_MODEL=your-model-name`.
+
+---
+
+## Telegram commands
+
+| Command | Description |
+|---|---|
+| `/start` | Welcome message |
+| `/reset` | Clear conversation history for this chat |
+| `/tools` | List all available tools |
+
+---
+
+## Optional: Voice interface (original demo)
+
+The LiveKit voice agent from the original demo is still included.
+
+```bash
+# Terminal 1 — MCP server
 uv run friday
-```
 
-Starts the FastMCP server on `http://127.0.0.1:8000/sse`. The voice agent connects here to fetch its tools.
-
-**Terminal 2 — Voice agent**
-
-```bash
+# Terminal 2 — Voice agent
 uv run friday_voice
 ```
 
-Starts the LiveKit voice agent in **dev mode** — it joins a LiveKit room and begins listening. Open the [LiveKit Agents Playground](https://agents-playground.livekit.io) and connect to your room to talk to FRIDAY.
-
----
-
-## `uv run friday` vs `uv run friday_voice`
-
-| Command | Entry point | What it does |
-|---------|------------|--------------|
-| `uv run friday` | `server.py → main()` | Launches the **FastMCP server** over SSE transport on port 8000. This is the "brain backend" — it registers all tools, prompts, and resources that the LLM can call. |
-| `uv run friday_voice` | `agent_friday.py → dev()` | Launches the **LiveKit voice agent**. It builds the STT / LLM / TTS pipeline, connects to your LiveKit room, and wires up the MCP server as a tool source. The `dev()` wrapper auto-injects the `dev` CLI flag so you don't have to type it manually. |
-
-> Both processes must run **simultaneously**. The voice agent calls the MCP server in real time whenever it needs a tool (e.g. fetching news).
-
----
-
-## Environment variables
-
-Copy `.env.example` → `.env` and fill in the values below.
-
-| Variable | Required | Where to get it |
-|----------|----------|----------------|
-| `LIVEKIT_URL` | ✅ | [LiveKit Cloud dashboard](https://cloud.livekit.io) → your project URL |
-| `LIVEKIT_API_KEY` | ✅ | LiveKit Cloud → API Keys |
-| `LIVEKIT_API_SECRET` | ✅ | LiveKit Cloud → API Keys |
-| `GROQ_API_KEY` | optional | [console.groq.com](https://console.groq.com) — only needed if you switch `LLM_PROVIDER` to `"groq"` |
-| `SARVAM_API_KEY` | ✅ (default STT) | [dashboard.sarvam.ai](https://dashboard.sarvam.ai) |
-| `OPENAI_API_KEY` | ✅ (default TTS) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| `DEEPGRAM_API_KEY` | optional | [console.deepgram.com](https://console.deepgram.com) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | optional | GCP service-account JSON path — only for `STT_PROVIDER = "google"` |
-| `GOOGLE_API_KEY` | ✅ (default LLM) | [aistudio.google.com](https://aistudio.google.com/projects) |
-| `SUPABASE_URL` | optional | [supabase.com](https://supabase.com) — for the ticketing tool |
-| `SUPABASE_API_KEY` | optional | Supabase project → API settings |
-
----
-
-## Switching providers
-
-Open `agent_friday.py` and change the provider constants at the top:
-
-```python
-STT_PROVIDER = "sarvam"   # "sarvam" | "whisper"
-LLM_PROVIDER = "gemini"   # "gemini" | "openai"
-TTS_PROVIDER = "openai"   # "openai" | "sarvam"
-```
+See the original README section in `agent_friday.py` for setup details.
 
 ---
 
@@ -145,19 +121,18 @@ TTS_PROVIDER = "openai"   # "openai" | "sarvam"
 
 1. Create or open a file in `friday/tools/`
 2. Define a `register(mcp)` function and decorate tools with `@mcp.tool()`
-3. Import and call `register(mcp)` inside `friday/tools/__init__.py`
+3. Import and call `register(mcp)` in `friday/tools/__init__.py`
 
-The MCP server will pick it up on next start.
+The tool is immediately available to both the Telegram agent and the MCP voice server.
 
 ---
 
 ## Tech stack
 
-- **[FastMCP](https://github.com/jlowin/fastmcp)** — MCP server framework
-- **[LiveKit Agents](https://github.com/livekit/agents)** — real-time voice pipeline
-- **Sarvam Saaras v3** — STT (Indian-English optimised)
-- **Google Gemini 2.5 Flash** — LLM
-- **OpenAI TTS** (`nova` voice) — TTS
+- **[python-telegram-bot](https://python-telegram-bot.org/)** — Telegram interface
+- **[Playwright](https://playwright.dev/python/)** — headless browser automation
+- **[duckduckgo-search](https://github.com/deedy5/duckduckgo_search)** — free web search
+- **[FastMCP](https://github.com/jlowin/fastmcp)** — MCP server (voice mode)
 - **[uv](https://github.com/astral-sh/uv)** — fast Python package manager
 
 ---
@@ -165,3 +140,4 @@ The MCP server will pick it up on next start.
 ## License
 
 MIT
+
