@@ -18,6 +18,7 @@ It can browse the web, run bash commands, search the internet, and more — all 
 | World news | `get_world_news` | Live RSS (BBC, CNBC, NYT, Al Jazeera) |
 | Fetch a URL | `fetch_url` | Raw page content |
 | System info | `get_system_info`, `get_current_time` | Host machine details |
+| 🎙️ Voice messages | — | Telegram voice notes transcribed via OpenAI Whisper API |
 
 All tools run **locally** on your machine. No paid third-party APIs required (beyond your chosen LLM).
 
@@ -26,14 +27,14 @@ All tools run **locally** on your machine. No paid third-party APIs required (be
 ## Architecture
 
 ```
-You (Telegram)
-      ↓
+You (Telegram — text or 🎙️ voice)
+       ↓
 Telegram Bot  (agent.py)
-      ↓
+       ↓  voice note → OpenAI Whisper API → text
 LLM  (Gemini / OpenAI / GitHub Copilot / Ollama)
-      ↓  tool calls
+       ↓  tool calls
 Tool layer  (bash · browser · web search · news · system)
-      ↓
+       ↓
 Your machine
 ```
 
@@ -101,19 +102,22 @@ Override the default model with `LLM_MODEL=your-model-name`.
 
 ---
 
-## Optional: Voice interface (original demo)
+## Optional: Voice interface (standalone agent)
 
-The LiveKit voice agent from the original demo is still included.
+The standalone LiveKit voice agent (`agent_friday.py`) now uses **OpenAI Whisper** (`whisper-1`) for speech-to-text instead of Sarvam.
+
+> **Telegram voice messages are supported out of the box** — no extra setup required beyond setting `OPENAI_API_KEY`. Just send a voice note to your bot.
+
+To run the standalone voice agent (requires LiveKit):
 
 ```bash
 # Terminal 1 — MCP server
 uv run friday
 
 # Terminal 2 — Voice agent
+uv sync --extra voice
 uv run friday_voice
 ```
-
-See the original README section in `agent_friday.py` for setup details.
 
 ---
 
