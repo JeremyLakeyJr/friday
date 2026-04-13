@@ -26,11 +26,18 @@ voice = [
     "livekit-agents[deepgram,groq,openai,sarvam,silero]>=1.5.1",
     "livekit-plugins-google>=1.5.1",
 ]
+# Local voice interface — faster-whisper + microphone capture, no API key required for STT
+voice-local = [
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4",
+    "numpy>=1.24",
+]
 
 [project.scripts]
 friday = "server:main"
 friday_voice = "agent_friday:dev"
 friday_agent = "agent:main"
+friday_voice_local = "voice_local:entry"
 
 [build-system]
 requires = ["hatchling"]
