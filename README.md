@@ -18,7 +18,7 @@ It can browse the web, run bash commands, search the internet, and more — all 
 | World news | `get_world_news` | Live RSS (BBC, CNBC, NYT, Al Jazeera) |
 | Fetch a URL | `fetch_url` | Raw page content |
 | System info | `get_system_info`, `get_current_time` | Host machine details |
-| 🎙️ Voice messages | — | Telegram voice notes transcribed via OpenAI Whisper API |
+| 🎙️ Voice (local) | — | Live microphone input transcribed on-device via faster-whisper |
 
 All tools run **locally** on your machine. No paid third-party APIs required (beyond your chosen LLM).
 
@@ -27,10 +27,23 @@ All tools run **locally** on your machine. No paid third-party APIs required (be
 ## Architecture
 
 ```
-You (Telegram — text or 🎙️ voice)
+You (microphone — live voice input)
+       ↓
+faster-whisper  (voice_local.py — on-device STT, no API key)
+       ↓
+LLM  (Gemini / OpenAI / GitHub Copilot / Ollama)
+       ↓  tool calls
+Tool layer  (bash · browser · web search · news · system)
+       ↓
+Your machine
+```
+
+or via Telegram:
+
+```
+You (Telegram — text)
        ↓
 Telegram Bot  (agent.py)
-       ↓  voice note → OpenAI Whisper API → text
 LLM  (Gemini / OpenAI / GitHub Copilot / Ollama)
        ↓  tool calls
 Tool layer  (bash · browser · web search · news · system)
@@ -102,13 +115,31 @@ Override the default model with `LLM_MODEL=your-model-name`.
 
 ---
 
-## Optional: Voice interface (standalone agent)
+## Optional: Local voice interface (faster-whisper)
 
-The standalone LiveKit voice agent (`agent_friday.py`) now uses **OpenAI Whisper** (`whisper-1`) for speech-to-text instead of Sarvam.
+Talk to Friday directly from your computer's microphone — no LiveKit, no cloud STT API key required.  
+Speech-to-text runs fully on-device using **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)**.
 
-> **Telegram voice messages are supported out of the box** — no extra setup required beyond setting `OPENAI_API_KEY`. Just send a voice note to your bot.
+```bash
+uv sync --extra voice-local
+uv run friday_voice_local
+```
 
-To run the standalone voice agent (requires LiveKit):
+Speak naturally; a short pause ends your turn and Friday responds.  
+Optionally install **pyttsx3** (`pip install pyttsx3`) for spoken audio replies.
+
+Tunable via `.env`:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `WHISPER_MODEL` | `base` | `tiny` / `base` / `small` / `medium` / `large-v3` |
+| `WHISPER_DEVICE` | `cpu` | `cpu` or `cuda` (GPU) |
+
+---
+
+## Optional: LiveKit voice agent (standalone agent)
+
+The LiveKit voice agent (`agent_friday.py`) requires a LiveKit server for room transport.
 
 ```bash
 # Terminal 1 — MCP server
@@ -133,6 +164,7 @@ The tool is immediately available to both the Telegram agent and the MCP voice s
 
 ## Tech stack
 
+- **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** — on-device speech-to-text (local voice mode)
 - **[python-telegram-bot](https://python-telegram-bot.org/)** — Telegram interface
 - **[Playwright](https://playwright.dev/python/)** — headless browser automation
 - **[duckduckgo-search](https://github.com/deedy5/duckduckgo_search)** — free web search
