@@ -13,10 +13,12 @@ It can browse the web, run bash commands, search the internet, and more — all 
 |---|---|---|
 | Run shell commands | `run_bash` | Full bash access, 30s timeout |
 | Read / write files | `read_file`, `write_file` | Local filesystem |
-| Control a browser | `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_get_text` | Headless Chromium via Playwright |
+| Control a browser | `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_get_text`, `browser_get_html`, `browser_current_url` | Headless Chromium via Playwright |
 | Search the web | `search_web` | DuckDuckGo — no API key |
 | World news | `get_world_news` | Live RSS (BBC, CNBC, NYT, Al Jazeera) |
 | Fetch a URL | `fetch_url` | Raw page content |
+| Open world monitor | `open_world_monitor` | Opens worldmonitor.app in the system browser |
+| Text utilities | `format_json`, `word_count` | Pretty-print JSON; count words/chars/lines |
 | System info | `get_system_info`, `get_current_time` | Host machine details |
 | 🧠 Persistent memory | `read_memory`, `write_memory`, `append_to_memory` | Markdown brain & user profile |
 | 🎙️ Voice messages | — | Telegram voice notes transcribed via OpenAI Whisper API |
@@ -111,7 +113,7 @@ Friday maintains a markdown-based memory that persists across conversations, sto
 
 ---
 
-
+## Telegram Commands
 
 | Command | Description |
 |---|---|
