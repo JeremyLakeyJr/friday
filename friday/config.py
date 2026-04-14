@@ -33,5 +33,9 @@ class Config:
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
     ALLOWED_USER_IDS: str = os.getenv("ALLOWED_USER_IDS", "")
 
+    # Home Assistant
+    HA_URL: str = os.getenv("HA_URL", "http://homeassistant.local:8123")
+    HA_TOKEN: str = os.getenv("HA_TOKEN", "")
+
 
 config = Config()

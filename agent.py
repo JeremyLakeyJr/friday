@@ -48,7 +48,7 @@ load_dotenv()
 # Bootstrap tools (direct import — no separate MCP server process needed)
 # ---------------------------------------------------------------------------
 
-from friday.tools import web, system, utils, bash, browser, memory as memory_tools
+from friday.tools import web, system, utils, bash, browser, memory as memory_tools, homeassistant as ha_tools
 from friday.config import config
 from friday.llm import get_llm
 
@@ -132,6 +132,7 @@ utils.register(collector)
 bash.register(collector)
 browser.register(collector)
 memory_tools.register(collector)
+ha_tools.register(collector)
 
 TOOL_SCHEMAS = collector._schemas
 logger.info("Registered %d tools: %s", len(TOOL_SCHEMAS), [s["function"]["name"] for s in TOOL_SCHEMAS])
