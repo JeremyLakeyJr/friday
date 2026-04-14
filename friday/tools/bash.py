@@ -28,25 +28,17 @@ def register(mcp):
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             except asyncio.TimeoutError:
                 proc.kill()
-                return {
-                    "stdout": "",
-                    "stderr": f"Command timed out after {timeout}s",
-                    "exit_code": -1,
-                    "working_dir": cwd,
-                }
-            return {
-                "stdout": stdout.decode(errors="replace").strip(),
-                "stderr": stderr.decode(errors="replace").strip(),
-                "exit_code": proc.returncode,
-                "working_dir": cwd,
-            }
+                return f"exit_code: -1\ncwd: {cwd}\nstderr:\nCommand timed out after {timeout}s"
+            out = stdout.decode(errors="replace").strip()
+            err = stderr.decode(errors="replace").strip()
+            parts = [f"exit_code: {proc.returncode}", f"cwd: {cwd}"]
+            if out:
+                parts.append(f"stdout:\n{out}")
+            if err:
+                parts.append(f"stderr:\n{err}")
+            return "\n".join(parts)
         except Exception as e:
-            return {
-                "stdout": "",
-                "stderr": str(e),
-                "exit_code": -1,
-                "working_dir": cwd,
-            }
+            return f"exit_code: -1\ncwd: {cwd}\nstderr:\n{e}"
 
     @mcp.tool()
     async def read_file(path: str) -> str:
