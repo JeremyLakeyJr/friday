@@ -159,29 +159,6 @@ def _is_allowed(user_id: int) -> bool:
 
 _chat_locks: dict[int, asyncio.Lock] = {}
 
-# ---------------------------------------------------------------------------
-# Memory directory (brain.md + user_profile.md)
-# ---------------------------------------------------------------------------
-
-MEMORY_DIR = Path(__file__).parent / "memory"
-
-
-def _load_memory_context() -> str:
-    """
-    Read brain.md and user_profile.md and return a formatted string
-    to append to the system prompt so the AI always has its memory available.
-    """
-    sections: list[str] = []
-    for name, label in [("brain", "AI Brain Memory"), ("user_profile", "User Profile")]:
-        path = MEMORY_DIR / f"{name}.md"
-        if path.exists():
-            content = path.read_text(encoding="utf-8").strip()
-            if content:
-                sections.append(f"### {label}\n\n{content}")
-    if not sections:
-        return ""
-    return "\n\n---\n\n## Persistent Memory\n\n" + "\n\n".join(sections)
-
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -196,16 +173,18 @@ Always report tool errors clearly.
 
 ## Memory System
 
-You have a persistent markdown-based memory stored in the `memory/` directory:
-- **brain.md** — Your general knowledge, learned facts, and notes.
-- **user_profile.md** — What you know about the user (name, preferences, habits, projects, etc.).
+You have a persistent SQLite memory store. Each entry has a category and importance (1-5).
+- **importance 5** — pinned, always visible in every prompt (use for the user's name, core preferences)
+- **importance 3** — normal, injected when relevant to the conversation
+- **importance 1** — archived, never auto-injected
 
-**Rules for using memory:**
-1. Your current memory is appended below — use it to give personalized, context-aware responses.
-2. Whenever you learn something new and useful about the user (their name, preferences, goals, technical setup, etc.), call `append_to_memory` with filename `user_profile` to save it immediately.
-3. Whenever you learn a general fact worth remembering across conversations, call `append_to_memory` with filename `brain`.
-4. If a memory section is getting cluttered or outdated, read the file with `read_memory` then rewrite the whole thing with `write_memory` to keep it clean and organised.
-5. Never ask the user for permission to update memory — just do it quietly."""
+**Rules:**
+1. Relevant memories are appended below automatically each turn — use them.
+2. Whenever you learn something new about the user (name, preferences, projects), call `add_memory` immediately (category=`user_profile`, importance=3-5).
+3. For general facts worth keeping, call `add_memory` (category=`brain`).
+4. To correct or replace a specific memory, use `update_memory` with the same key.
+5. To find older memories, call `search_memory`.
+6. Never ask the user for permission to save memory — just do it."""
 
 # ---------------------------------------------------------------------------
 # Conversation history (per chat_id, in-memory)
@@ -215,18 +194,17 @@ _history: dict[int, list[dict]] = {}
 MAX_HISTORY = 40  # keep last N messages
 
 
-def _get_system_prompt() -> str:
-    """Build the full system prompt including current memory contents."""
-    return _BASE_SYSTEM_PROMPT + _load_memory_context()
+def _get_system_prompt(user_text: str = "") -> str:
+    """Build system prompt with relevant memory injected for this turn."""
+    from friday.tools.memory import get_memory_context
+    return _BASE_SYSTEM_PROMPT + get_memory_context(user_text)
 
 
-def _get_history(chat_id: int) -> list[dict]:
+def _get_history(chat_id: int, user_text: str = "") -> list[dict]:
     if chat_id not in _history:
-        _history[chat_id] = [{"role": "system", "content": _get_system_prompt()}]
+        _history[chat_id] = [{"role": "system", "content": _get_system_prompt(user_text)}]
     else:
-        # Refresh the system message so any memory updates made during the
-        # previous turn are reflected in the next turn.
-        _history[chat_id][0] = {"role": "system", "content": _get_system_prompt()}
+        _history[chat_id][0] = {"role": "system", "content": _get_system_prompt(user_text)}
     return _history[chat_id]
 
 
@@ -249,7 +227,7 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
     from friday.tools.browser import current_chat_id
     current_chat_id.set(chat_id)
 
-    history = _get_history(chat_id)
+    history = _get_history(chat_id, user_text)
     history.append({"role": "user", "content": user_text})
 
     llm = get_llm()
