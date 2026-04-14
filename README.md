@@ -93,6 +93,42 @@ Open your bot in Telegram and send it a message — text or voice.
 
 ---
 
+## Desktop voice agent
+
+Talk to Friday directly on your desktop — no Telegram, no cloud audio API. Uses local models.
+
+```bash
+# Install voice deps (Coqui TTS + faster-whisper + sounddevice)
+uv sync --extra voice
+
+# (First run downloads TTS + Whisper models — ~600 MB with default settings)
+uv run friday_voice
+```
+
+Speak after the `🎤 Listening…` prompt. Friday responds aloud with full tool access.
+
+### Voice model options
+
+Set in `.env` — all optional:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `WHISPER_MODEL` | `base.en` | `tiny.en` (fast) → `medium.en` (accurate) |
+| `WHISPER_DEVICE` | `cpu` | `cuda` for GPU |
+| `TTS_MODEL` | `tts_models/en/ljspeech/tacotron2-DDC` | Light, English only |
+| `TTS_SPEAKER` | _(blank)_ | Required for multi-speaker models (e.g. XTTS-v2) |
+| `TTS_LANGUAGE` | `en` | For multilingual models only |
+| `VAD_THRESHOLD` | `0.015` | RMS mic sensitivity |
+
+**Best quality voice (XTTS-v2):**
+```env
+TTS_MODEL=tts_models/multilingual/multi-dataset/xtts_v2
+TTS_SPEAKER=Ana Florence
+TTS_LANGUAGE=en
+```
+
+---
+
 ## LLM Providers
 
 | `LLM_PROVIDER` | Model | Key needed |

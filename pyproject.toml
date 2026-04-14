@@ -21,15 +21,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Voice interface (LiveKit + STT/TTS) — heavy deps, install separately if needed
+# Desktop voice loop (local STT + Coqui TTS — no LiveKit, no cloud API key needed)
 voice = [
-    "livekit-agents[deepgram,groq,openai,sarvam,silero]>=1.5.1",
-    "livekit-plugins-google>=1.5.1",
+    "TTS>=0.22.0",          # Coqui TTS (XTTS-v2, tacotron2, etc.)
+    "faster-whisper>=1.0",  # Local Whisper STT
+    "sounddevice>=0.4",     # Mic capture + speaker playback
+    "soundfile>=0.12",      # WAV I/O
 ]
 
 [project.scripts]
 friday = "server:main"
-friday_voice = "agent_friday:dev"
+friday_voice = "voice_agent:main"
 friday_agent = "agent:main"
 
 [build-system]
