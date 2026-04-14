@@ -1,34 +1,68 @@
 """
 Browser tool — control a headless Chromium browser via Playwright.
+Per-chat isolation: each Telegram chat gets its own browser context + page.
 Screenshots are returned as base64-encoded PNG data.
 """
 
 import asyncio
 import base64
+import contextvars
 from typing import Optional
 
-_browser = None
-_page = None
-_lock = asyncio.Lock()
+# Set before tool calls in agent.py to route to the correct per-chat page
+current_chat_id: contextvars.ContextVar[int] = contextvars.ContextVar("current_chat_id", default=0)
+
+_pw = None           # playwright instance (shared)
+_browser = None      # browser process (shared)
+_pages: dict[int, object] = {}   # chat_id → Page
+_init_lock = asyncio.Lock()
 
 
-async def _get_page():
-    """Lazily initialise the Playwright browser and return the active page."""
-    global _browser, _page
-    async with _lock:
+async def _get_page() -> object:
+    """Lazily init browser; return the page for the current chat."""
+    global _pw, _browser
+
+    async with _init_lock:
         if _browser is None:
             from playwright.async_api import async_playwright
-            pw = await async_playwright().start()
-            _browser = await pw.chromium.launch(headless=True)
-            context = await _browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-            )
-            _page = await context.new_page()
-        return _page
+            _pw = await async_playwright().start()
+            _browser = await _pw.chromium.launch(headless=True)
+
+    chat_id = current_chat_id.get()
+    if chat_id not in _pages:
+        context = await _browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        _pages[chat_id] = await context.new_page()
+
+    return _pages[chat_id]
+
+
+async def close_browser():
+    """Gracefully close all pages and the browser process."""
+    global _pw, _browser, _pages
+    for page in list(_pages.values()):
+        try:
+            await page.context.close()
+        except Exception:
+            pass
+    _pages.clear()
+    if _browser is not None:
+        try:
+            await _browser.close()
+        except Exception:
+            pass
+        _browser = None
+    if _pw is not None:
+        try:
+            await _pw.stop()
+        except Exception:
+            pass
+        _pw = None
 
 
 def register(mcp):

@@ -50,7 +50,7 @@ load_dotenv()
 
 from friday.tools import web, system, utils, bash, browser, memory as memory_tools
 from friday.config import config
-from friday.llm import build_llm
+from friday.llm import get_llm
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -135,6 +135,29 @@ memory_tools.register(collector)
 
 TOOL_SCHEMAS = collector._schemas
 logger.info("Registered %d tools: %s", len(TOOL_SCHEMAS), [s["function"]["name"] for s in TOOL_SCHEMAS])
+
+# ---------------------------------------------------------------------------
+# Security — allowed user whitelist
+# ---------------------------------------------------------------------------
+
+_raw_ids = config.ALLOWED_USER_IDS.strip()
+ALLOWED_USER_IDS: frozenset[int] = (
+    frozenset(int(i) for i in _raw_ids.split(",") if i.strip())
+    if _raw_ids else frozenset()
+)
+if not ALLOWED_USER_IDS:
+    logger.warning("ALLOWED_USER_IDS not set — bot is open to ALL users!")
+
+
+def _is_allowed(user_id: int) -> bool:
+    return not ALLOWED_USER_IDS or user_id in ALLOWED_USER_IDS
+
+
+# ---------------------------------------------------------------------------
+# Per-chat concurrency lock
+# ---------------------------------------------------------------------------
+
+_chat_locks: dict[int, asyncio.Lock] = {}
 
 # ---------------------------------------------------------------------------
 # Memory directory (brain.md + user_profile.md)
@@ -223,10 +246,13 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
     Process one user message through the LLM + tool loop.
     Returns list of (text, image_bytes_or_None) tuples to send back.
     """
+    from friday.tools.browser import current_chat_id
+    current_chat_id.set(chat_id)
+
     history = _get_history(chat_id)
     history.append({"role": "user", "content": user_text})
 
-    llm = build_llm()
+    llm = get_llm()
     responses: list[tuple[str, bytes | None]] = []
 
     for _ in range(10):  # max tool-call iterations per turn
@@ -256,9 +282,13 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
                 # Handle screenshot — extract base64 image
                 image_bytes = None
                 if isinstance(tool_output, str) and tool_output.startswith("data:image/png;base64,"):
-                    raw_b64 = tool_output.split(",", 1)[1]
-                    image_bytes = base64.b64decode(raw_b64)
-                    tool_output = "[screenshot attached]"
+                    try:
+                        raw_b64 = tool_output.split(",", 1)[1]
+                        image_bytes = base64.b64decode(raw_b64)
+                        tool_output = "[screenshot attached]"
+                    except Exception as exc:
+                        logger.warning("Failed to decode screenshot: %s", exc)
+                        tool_output = "[screenshot decode error]"
 
                 if image_bytes:
                     responses.append(("📸 Screenshot:", image_bytes))
@@ -266,6 +296,7 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
                 tool_results.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
+                    "name": tc.name,
                     "content": str(tool_output),
                 })
                 logger.debug("Tool result: %s", str(tool_output)[:200])
@@ -281,9 +312,11 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
             _trim_history(chat_id)
             return responses
 
-    # Fallback if max iterations hit
+    # Fallback if max iterations hit — still append a minimal assistant message
+    fallback = "I hit the tool-call limit for this turn."
+    history.append({"role": "assistant", "content": fallback})
     _trim_history(chat_id)
-    return responses or [("I hit the tool-call limit for this turn.", None)]
+    return responses or [(fallback, None)]
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +369,11 @@ async def _send_responses(
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    if not _is_allowed(user_id):
+        await update.message.reply_text("⛔ Not authorised.")
+        return
+
     user_text = update.message.text or ""
     if not user_text.strip():
         return
@@ -343,12 +381,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show typing indicator
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-    try:
-        responses = await _run_agent_turn(chat_id, user_text)
-    except Exception as e:
-        logger.exception("Agent turn failed")
-        await update.message.reply_text(f"⚠️ Error: {e}")
-        return
+    lock = _chat_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        try:
+            responses = await _run_agent_turn(chat_id, user_text)
+        except Exception as e:
+            logger.exception("Agent turn failed")
+            await update.message.reply_text(f"⚠️ Error: {e}")
+            return
 
     await _send_responses(update, context, responses)
 
@@ -356,6 +396,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Transcribe a Telegram voice note via OpenAI Whisper, then run the agent."""
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    if not _is_allowed(user_id):
+        await update.message.reply_text("⛔ Not authorised.")
+        return
+
     if not config.OPENAI_API_KEY:
         await update.message.reply_text(
             "⚠️ Voice transcription requires OPENAI_API_KEY to be set in .env"
@@ -389,12 +434,14 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
     # Echo the transcription so the user knows what was heard
     await update.message.reply_text(f"🎙️ _{user_text}_", parse_mode=ParseMode.MARKDOWN)
 
-    try:
-        responses = await _run_agent_turn(chat_id, user_text)
-    except Exception as e:
-        logger.exception("Agent turn failed (voice)")
-        await update.message.reply_text(f"⚠️ Error: {e}")
-        return
+    lock = _chat_locks.setdefault(chat_id, asyncio.Lock())
+    async with lock:
+        try:
+            responses = await _run_agent_turn(chat_id, user_text)
+        except Exception as e:
+            logger.exception("Agent turn failed (voice)")
+            await update.message.reply_text(f"⚠️ Error: {e}")
+            return
 
     await _send_responses(update, context, responses)
 
@@ -424,6 +471,12 @@ def main():
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
+
+    async def _shutdown(_app):
+        from friday.tools.browser import close_browser
+        await close_browser()
+
+    app.post_shutdown(_shutdown)
 
     logger.info("Friday agent starting (LLM_PROVIDER=%s)…", config.LLM_PROVIDER)
     app.run_polling(drop_pending_updates=True)

@@ -31,6 +31,7 @@ class Config:
 
     # Telegram bot
     TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
+    ALLOWED_USER_IDS: str = os.getenv("ALLOWED_USER_IDS", "")
 
 
 config = Config()

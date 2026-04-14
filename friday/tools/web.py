@@ -87,7 +87,7 @@ def register(mcp):
         Search the web using DuckDuckGo (no API key required).
         Returns top 5 results with title, URL, and snippet.
         """
-        try:
+        def _sync_search():
             from duckduckgo_search import DDGS
             results = []
             with DDGS() as ddgs:
@@ -97,6 +97,11 @@ def register(mcp):
                         f"{r.get('body', '')[:200]}\n"
                         f"URL: {r.get('href', '')}"
                     )
+            return results
+
+        try:
+            import asyncio
+            results = await asyncio.to_thread(_sync_search)
             if not results:
                 return "No results found."
             return "\n\n".join(results)
