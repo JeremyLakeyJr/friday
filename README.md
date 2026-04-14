@@ -2,28 +2,27 @@
 
 > *"Fully Responsive Intelligent Digital Assistant for You"*
 
-An autonomous AI agent that lives on your machine and is accessible via **Telegram**.  
-It can browse the web, run bash commands, search the internet, and more — all triggered by a text message.
+An autonomous AI agent that lives on your machine, accessible via **Telegram** (text or 🎙️ voice).  
+Controls your computer, browses the web, manages your smart home, and remembers everything you tell it — across sessions.
 
 ---
 
 ## What it can do
 
-| Capability | Tool | Notes |
+| Capability | Tools | Notes |
 |---|---|---|
-| Run shell commands | `run_bash` | Full bash access, 30s timeout |
-| Read / write files | `read_file`, `write_file` | Local filesystem |
-| Control a browser | `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_get_text`, `browser_get_html`, `browser_current_url` | Headless Chromium via Playwright |
-| Search the web | `search_web` | DuckDuckGo — no API key |
-| World news | `get_world_news` | Live RSS (BBC, CNBC, NYT, Al Jazeera) |
-| Fetch a URL | `fetch_url` | Raw page content |
-| Open world monitor | `open_world_monitor` | Opens worldmonitor.app in the system browser |
-| Text utilities | `format_json`, `word_count` | Pretty-print JSON; count words/chars/lines |
-| System info | `get_system_info`, `get_current_time` | Host machine details |
-| 🧠 Persistent memory | `read_memory`, `write_memory`, `append_to_memory` | Markdown brain & user profile |
-| 🎙️ Voice messages | — | Telegram voice notes transcribed via OpenAI Whisper API |
+| 🖥️ Run shell commands | `run_bash` | Full bash access, configurable timeout |
+| 📁 Read / write files | `read_file`, `write_file` | Local filesystem |
+| 🌐 Control a browser | `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_get_text`, `browser_get_html`, `browser_current_url` | Headless Chromium via Playwright, per-chat isolation |
+| 🔍 Search the web | `search_web` | DuckDuckGo — no API key |
+| 📰 World news | `get_world_news` | Live RSS headlines |
+| 🔗 Fetch a URL | `fetch_url` | Raw page content, no browser overhead |
+| 🏠 Home Assistant | `ha_get_states`, `ha_get_state`, `ha_call_service`, `ha_list_domains` | Control lights, switches, climate, media, scripts |
+| 🧠 Persistent memory | `add_memory`, `update_memory`, `search_memory`, `forget_memory`, `list_memories` | SQLite + FTS5 — relevant facts injected per turn |
+| 🎙️ Voice messages | — | Telegram voice notes → OpenAI Whisper |
+| 🛠️ Utilities | `format_json`, `word_count`, `get_system_info`, `get_current_time` | System info + text tools |
 
-All tools run **locally** on your machine. No paid third-party APIs required (beyond your chosen LLM).
+27 tools total. No paid third-party APIs required beyond your chosen LLM.
 
 ---
 
@@ -32,14 +31,16 @@ All tools run **locally** on your machine. No paid third-party APIs required (be
 ```
 You (Telegram — text or 🎙️ voice)
        ↓
-Telegram Bot  (agent.py)
-       ↓  voice note → OpenAI Whisper API → text
+agent.py  (Telegram bot + tool loop)
+       ↓  voice → OpenAI Whisper → text
 LLM  (Gemini / OpenAI / GitHub Copilot / Ollama)
-       ↓  tool calls
-Tool layer  (bash · browser · web search · news · system · memory)
-       ↓                                                    ↓
-Your machine                                        memory/brain.md
-                                                    memory/user_profile.md
+       ↓  tool calls (up to 10 per turn)
+┌──────────────────────────────────────────────────┐
+│  bash · browser · web · news · HA · memory · sys  │
+└──────────────────────────────────────────────────┘
+       ↓                              ↓
+Your machine                  memory/friday.db (SQLite)
+                              skills/*.md (tool docs)
 ```
 
 ---
@@ -58,18 +59,29 @@ Your machine                                        memory/brain.md
 ```bash
 git clone https://github.com/JeremyLakeyJr/friday.git
 cd friday
-uv sync                                  # core agent deps
-uv run playwright install chromium       # download Chromium for browser tools
-# Optional: voice interface
-# uv sync --extra voice
+uv sync
+uv run playwright install chromium   # headless browser
 ```
 
 ### 3. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set TELEGRAM_TOKEN and one LLM provider key
+# Edit .env — set TELEGRAM_TOKEN and at least one LLM key
 ```
+
+Minimum `.env`:
+```env
+TELEGRAM_TOKEN=your-bot-token
+LLM_PROVIDER=gemini
+GOOGLE_API_KEY=your-key
+```
+
+Optional — restrict to specific Telegram users (recommended):
+```env
+ALLOWED_USER_IDS=123456789,987654321
+```
+Get your ID from [@userinfobot](https://t.me/userinfobot).
 
 ### 4. Run
 
@@ -77,78 +89,85 @@ cp .env.example .env
 uv run friday_agent
 ```
 
-The bot starts polling Telegram. Open your bot in the Telegram app and send it a message.
+Open your bot in Telegram and send it a message — text or voice.
 
 ---
 
 ## LLM Providers
 
-Set `LLM_PROVIDER` in `.env`:
-
-| Value | What it uses | Key needed |
+| `LLM_PROVIDER` | Model | Key needed |
 |---|---|---|
-| `gemini` *(default)* | Google Gemini 2.5 Flash | `GOOGLE_API_KEY` |
-| `openai` | OpenAI GPT-4o | `OPENAI_API_KEY` |
-| `copilot` | GitHub Models API (Copilot) | `GH_TOKEN` |
-| `ollama` | Self-hosted Ollama | none (set `OLLAMA_URL`) |
+| `gemini` *(default)* | Gemini 2.5 Flash | `GOOGLE_API_KEY` |
+| `openai` | GPT-4o | `OPENAI_API_KEY` |
+| `copilot` | GitHub Models API | `GH_TOKEN` |
+| `ollama` | any local model | `OLLAMA_URL` + `OLLAMA_MODEL` |
 
-Override the default model with `LLM_MODEL=your-model-name`.
+Override the model: `LLM_MODEL=gemini-1.5-pro`
+
+---
+
+## Home Assistant
+
+Add to `.env`:
+```env
+HA_URL=http://homeassistant.local:8123
+HA_TOKEN=<long-lived token from HA → Profile → Security>
+```
+
+Then just tell Friday: *"turn off the kitchen lights"*, *"set thermostat to 22°"*, *"what's the living room temperature?"*
+
+Friday will discover your entity IDs automatically via `ha_list_domains` + `ha_get_states`.
 
 ---
 
 ## Persistent Memory
 
-Friday maintains a markdown-based memory that persists across conversations, stored in the `memory/` directory:
+Friday stores facts in a SQLite database (`memory/friday.db`) that survives across sessions.
 
-| File | Purpose |
+| Importance | Behaviour |
 |---|---|
-| `memory/brain.md` | Friday's general knowledge, learned facts, and notes |
-| `memory/user_profile.md` | What Friday knows about *you* — name, preferences, habits, projects, technical setup |
+| 5 — pinned | Always injected into every prompt (user's name, key preferences) |
+| 3 — normal | Injected only when FTS-relevant to the current message |
+| 1 — archived | Never auto-injected, but searchable with `search_memory` |
 
-**How it works:**
-- At the start of every turn, both files are read and injected into Friday's system prompt so it always has context.
-- When Friday learns something new about you (your name, a preference, a project), it silently calls `append_to_memory` to save it.
-- Friday can also rewrite a file entirely with `write_memory` to keep memories clean and organised.
-- You can read or edit these files directly — they're plain markdown.
+Friday saves new information silently — no permission needed. To inspect or manage memory, ask Friday directly: *"list my memories"*, *"forget that I told you X"*.
 
 ---
 
-## Telegram Commands
+## Skills system
+
+Tool documentation lives in `skills/*.md` — loaded once at startup and injected into the system prompt. The base prompt stays under 1 KB; skill docs add ~6 KB.
+
+To teach Friday a new capability: drop a `.md` file in `skills/` and restart. No Python changes needed for documentation updates.
+
+```
+skills/
+  shell.md          bash, read_file, write_file
+  browser.md        all browser_* tools
+  web.md            search_web, fetch_url, get_world_news
+  memory.md         all memory tools + rules
+  system.md         system info + utilities
+  homeassistant.md  Home Assistant control
+```
+
+---
+
+## Telegram commands
 
 | Command | Description |
 |---|---|
 | `/start` | Welcome message |
 | `/reset` | Clear conversation history for this chat |
-| `/tools` | List all available tools |
-
----
-
-## Optional: Voice interface (standalone agent)
-
-The standalone LiveKit voice agent (`agent_friday.py`) now uses **OpenAI Whisper** (`whisper-1`) for speech-to-text instead of Sarvam.
-
-> **Telegram voice messages are supported out of the box** — no extra setup required beyond setting `OPENAI_API_KEY`. Just send a voice note to your bot.
-
-To run the standalone voice agent (requires LiveKit):
-
-```bash
-# Terminal 1 — MCP server
-uv run friday
-
-# Terminal 2 — Voice agent
-uv sync --extra voice
-uv run friday_voice
-```
+| `/tools` | List all registered tools |
 
 ---
 
 ## Adding a new tool
 
-1. Create or open a file in `friday/tools/`
-2. Define a `register(mcp)` function and decorate tools with `@mcp.tool()`
-3. Import and call `register(mcp)` in `friday/tools/__init__.py`
-
-The tool is immediately available to both the Telegram agent and the MCP voice server.
+1. Create `friday/tools/mytool.py` with a `register(mcp)` function
+2. Decorate tools with `@mcp.tool()`
+3. Import and call `register(collector)` in `agent.py`
+4. Add a `skills/mytool.md` with usage docs
 
 ---
 
@@ -157,7 +176,8 @@ The tool is immediately available to both the Telegram agent and the MCP voice s
 - **[python-telegram-bot](https://python-telegram-bot.org/)** — Telegram interface
 - **[Playwright](https://playwright.dev/python/)** — headless browser automation
 - **[duckduckgo-search](https://github.com/deedy5/duckduckgo_search)** — free web search
-- **[FastMCP](https://github.com/jlowin/fastmcp)** — MCP server (voice mode)
+- **[httpx](https://www.python-httpx.org/)** — async HTTP (web + Home Assistant)
+- **[SQLite FTS5](https://www.sqlite.org/fts5.html)** — persistent memory + full-text search
 - **[uv](https://github.com/astral-sh/uv)** — fast Python package manager
 
 ---
