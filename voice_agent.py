@@ -50,7 +50,7 @@ from friday.llm import get_llm
 from friday.tools import bash, browser, memory as memory_tools, system, utils, web
 from friday.tools import homeassistant as ha_tools
 from friday.tools.browser import close_browser, current_chat_id
-from friday.tools.memory import get_memory_context
+from friday.tools.memory import get_memory_context, _sync_add
 
 load_dotenv()
 
@@ -84,6 +84,9 @@ MAX_HISTORY      = 12   # keep last N messages (6 turns) — voice is conversati
 # gpt-4o-mini cap ≈ 8000 tokens → ~32 000 chars; tools+system ≈ 14 000 → 18 000 left.
 _HISTORY_CHAR_BUDGET = 16_000
 _TOOL_RESULT_MAX     = 1_200   # max chars kept from any single tool result
+
+# Messages evicted from context during the current turn, pending consolidation to memory.
+_pending_consolidation: list[dict] = []
 
 # ---------------------------------------------------------------------------
 # Lazy model handles
@@ -236,15 +239,75 @@ def _init_history(user_text: str = "") -> None:
 
 
 def _trim_history() -> None:
-    """Trim to MAX_HISTORY messages, then further trim if over char budget."""
+    """Trim to MAX_HISTORY messages, then trim if over char budget.
+    
+    Messages dropped here are queued into _pending_consolidation so
+    important facts can be saved to long-term memory before they vanish.
+    """
     if len(_history) > MAX_HISTORY + 1:
+        excess = _history[1:-(MAX_HISTORY)]
+        _pending_consolidation.extend(m for m in excess if m.get("role") in ("user", "assistant"))
         _history[:] = [_history[0]] + _history[-(MAX_HISTORY):]
     # Drop oldest non-system messages until we're within the char budget.
     while True:
         total = sum(len(str(m.get("content") or "")) for m in _history)
         if total <= _HISTORY_CHAR_BUDGET or len(_history) <= 2:
             break
-        _history.pop(1)  # remove oldest message after system prompt
+        dropped = _history.pop(1)
+        if dropped.get("role") in ("user", "assistant"):
+            _pending_consolidation.append(dropped)
+
+
+async def _consolidate_to_memory(messages: list[dict]) -> None:
+    """Ask the LLM to extract key facts from evicted messages and save them to memory.
+    
+    Runs as a fire-and-forget background task so it never blocks the main turn.
+    """
+    import re as _re
+
+    lines = []
+    for m in messages:
+        role = m.get("role", "")
+        content = m.get("content") or ""
+        if isinstance(content, list):
+            content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        if content:
+            lines.append(f"{role.upper()}: {content[:400]}")
+
+    if not lines:
+        return
+
+    snippet = "\n".join(lines)
+    prompt = (
+        "Extract 1-3 concise facts worth remembering from this conversation. "
+        "Focus on: user preferences, decisions, important facts, or ongoing tasks. "
+        "Skip small talk. Reply ONLY with a JSON array, no markdown:\n"
+        '[{"content":"...","category":"brain","importance":3}]\n\n'
+        f"Conversation:\n{snippet}"
+    )
+
+    try:
+        llm = get_llm()
+        result = await llm.chat(
+            [
+                {"role": "system", "content": "You extract key facts from conversation history. Be concise and factual."},
+                {"role": "user", "content": prompt},
+            ]
+        )
+        text = result.content or ""
+        match = _re.search(r"\[.*?\]", text, _re.DOTALL)
+        if not match:
+            return
+        facts = json.loads(match.group())
+        for fact in facts[:3]:
+            content = str(fact.get("content", "")).strip()
+            category = str(fact.get("category", "brain"))
+            importance = min(max(int(fact.get("importance", 3)), 1), 5)
+            if content:
+                await asyncio.to_thread(_sync_add, content, category, None, importance)
+                logger.info("Memory consolidated: [%s] %s", category, content[:100])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Memory consolidation skipped: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +361,22 @@ async def _run_turn(user_text: str) -> str:
             reply = result.content or ""
             _history.append({"role": "assistant", "content": reply})
             _trim_history()
+            _fire_consolidation()
             return reply
 
     fallback = "I hit the tool-call limit. Please try again."
     _history.append({"role": "assistant", "content": fallback})
     _trim_history()
+    _fire_consolidation()
     return fallback
+
+
+def _fire_consolidation() -> None:
+    """Launch a background task to save any evicted messages to memory."""
+    if _pending_consolidation:
+        to_save = _pending_consolidation[:]
+        _pending_consolidation.clear()
+        asyncio.create_task(_consolidate_to_memory(to_save))
 
 
 # ---------------------------------------------------------------------------
