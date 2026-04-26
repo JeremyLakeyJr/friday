@@ -435,11 +435,64 @@ if [[ "$HAS_MIC" == true ]]; then
   step "Voice agent (optional)"
   echo -e "  Microphone detected. Voice deps add Coqui TTS + faster-whisper (~600 MB models on first run)."
   if ask "Install voice extras?"; then
-    uv sync --extra voice
-    success "Voice extras installed"
-    INSTALLED_VOICE=true
-    if [[ "$HAS_NVIDIA" == true ]]; then
-      info "CUDA GPU found — add WHISPER_DEVICE=cuda to .env for faster transcription"
+
+    # Retry loop — large wheels (ctranslate2, onnxruntime, torch) can time out
+    _voice_ok=false
+    for _attempt in 1 2 3; do
+      info "Installing voice packages — attempt ${_attempt}/3 (3 concurrent downloads)…"
+      if UV_CONCURRENT_DOWNLOADS=3 UV_HTTP_TIMEOUT=180 uv sync --extra voice; then
+        _voice_ok=true
+        break
+      fi
+      warn "Attempt ${_attempt} failed. Waiting 5 s before retry…"
+      sleep 5
+    done
+
+    if [[ "$_voice_ok" == false ]]; then
+      err "Voice extras install failed after 3 attempts."
+      info "Run manually later:  uv sync --extra voice"
+    else
+      success "Voice extras installed"
+      INSTALLED_VOICE=true
+
+      # Optional: pre-download AI models so the first run doesn't block
+      echo ""
+      echo -e "  Voice models download on first run (~800 MB). You can grab them now."
+      if ask "Pre-download voice models? (Whisper base.en + TTS)"; then
+        step "Pre-downloading voice models (up to 3 parallel)"
+        COQUI_TOS_AGREED=1 uv run python -u - <<'PYEOF'
+import sys, os, concurrent.futures
+os.environ["COQUI_TOS_AGREED"] = "1"
+
+def dl_whisper():
+    print("  [whisper] Downloading base.en (~145 MB)…", flush=True)
+    from faster_whisper import WhisperModel
+    WhisperModel("base.en", device="cpu", compute_type="int8")
+    print("  [whisper] base.en ready ✓", flush=True)
+
+def dl_tts():
+    print("  [tts]     Downloading tacotron2-DDC (~65 MB)…", flush=True)
+    from TTS.api import TTS  # noqa: N813
+    TTS("tts_models/en/ljspeech/tacotron2-DDC")
+    print("  [tts]     tacotron2-DDC ready ✓", flush=True)
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+    futures = {pool.submit(dl_whisper): "whisper", pool.submit(dl_tts): "tts"}
+    for fut in concurrent.futures.as_completed(futures):
+        name = futures[fut]
+        try:
+            fut.result()
+        except Exception as exc:
+            print(f"  WARNING: {name} model download failed: {exc}", file=sys.stderr)
+PYEOF
+        success "Voice models pre-downloaded"
+      else
+        info "Models will download automatically on first run of voice_agent"
+      fi
+
+      if [[ "$HAS_NVIDIA" == true ]]; then
+        info "CUDA GPU found — add WHISPER_DEVICE=cuda to .env for faster transcription"
+      fi
     fi
   else
     info "Skipped. Install later: uv sync --extra voice"
