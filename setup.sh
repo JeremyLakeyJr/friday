@@ -536,6 +536,16 @@ if [[ "$SETUP_AUTO_BROWSER" == true ]]; then
     set_env "AUTO_BROWSER_URL" "http://127.0.0.1:8000"
     success "AUTO_BROWSER_URL=http://127.0.0.1:8000 written"
   fi
+  # Configure auto-browser to allow all hosts so Friday can browse any URL.
+  AB_ENV="external/auto-browser/.env"
+  if [[ -f "$AB_ENV" ]]; then
+    if grep -q "^ALLOWED_HOSTS=" "$AB_ENV"; then
+      sed -i 's/^ALLOWED_HOSTS=.*/ALLOWED_HOSTS=*/' "$AB_ENV"
+    else
+      echo "ALLOWED_HOSTS=*" >> "$AB_ENV"
+    fi
+    success "ALLOWED_HOSTS=* set in external/auto-browser/.env"
+  fi
 fi
 
 # ── Directories ───────────────────────────────────────────────────────────────
