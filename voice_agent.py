@@ -85,8 +85,21 @@ MAX_HISTORY      = 12   # keep last N messages (6 turns) — voice is conversati
 _HISTORY_CHAR_BUDGET = 16_000
 _TOOL_RESULT_MAX     = 1_200   # max chars kept from any single tool result
 
+# Wake word config  (set WAKE_WORD_ENABLED=1 in .env to enable)
+WAKE_WORD_ENABLED   = os.getenv("WAKE_WORD_ENABLED",   "0") == "1"
+WAKE_WORD_MODEL     = os.getenv("WAKE_WORD_MODEL",     "hey_jarvis")  # alexa, hey_mycroft …
+WAKE_WORD_THRESHOLD = float(os.getenv("WAKE_WORD_THRESHOLD", "0.5"))
+_WAKE_CHUNK         = 1280    # 80 ms of 16 kHz audio per openwakeword frame
+
 # Messages evicted from context during the current turn, pending consolidation to memory.
 _pending_consolidation: list[dict] = []
+
+# ---------------------------------------------------------------------------
+# Pipeline queues — created in main() so they bind to the running event loop.
+# ---------------------------------------------------------------------------
+_speech_q: asyncio.Queue     # text → _tts_consumer
+_utterance_q: asyncio.Queue  # transcribed text → _brain_consumer
+_background_agent: Any       # BackgroundAgent, created in main()
 
 # ---------------------------------------------------------------------------
 # Lazy model handles
@@ -122,8 +135,53 @@ def _get_tts():
 
 
 # ---------------------------------------------------------------------------
-# Tool collector (same pattern as agent.py)
+# Wake word utilities
 # ---------------------------------------------------------------------------
+
+def _load_wake_model():
+    """Load the openwakeword model. Returns None if disabled or not installed."""
+    if not WAKE_WORD_ENABLED:
+        return None
+    try:
+        from openwakeword.model import Model  # type: ignore[import]
+        logger.info("Loading wake word model '%s' …", WAKE_WORD_MODEL)
+        m = Model(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
+        logger.info("Wake word ready. Say '%s' to activate.", WAKE_WORD_MODEL.replace("_", " "))
+        return m
+    except ImportError:
+        logger.warning(
+            "openwakeword not installed — wake word disabled. "
+            "Install with: uv sync --extra voice"
+        )
+        return None
+    except Exception as exc:
+        logger.warning("Wake word model load failed: %s — falling back to always-on.", exc)
+        return None
+
+
+def _scan_for_wake_word(mic: "MicCapture", wake_model: Any) -> None:
+    """Block (in a thread) until the wake word is detected, then return."""
+    buf = np.array([], dtype=np.float32)
+    while True:
+        try:
+            chunk = mic._q.get(timeout=0.3)
+        except queue.Empty:
+            continue
+        buf = np.concatenate([buf, chunk.flatten()])
+        while len(buf) >= _WAKE_CHUNK:
+            frame = buf[:_WAKE_CHUNK]
+            buf = buf[_WAKE_CHUNK:]
+            prediction = wake_model.predict(frame)
+            for _, scores in prediction.items():
+                max_score = float(np.max(scores)) if len(scores) > 0 else 0.0
+                if max_score >= WAKE_WORD_THRESHOLD:
+                    # Drain stale mic audio so we don't transcribe the wake phrase
+                    while not mic._q.empty():
+                        try:
+                            mic._q.get_nowait()
+                        except queue.Empty:
+                            break
+                    return
 
 class _ToolCollector:
     """Minimal shim that collects tool functions registered via @mcp.tool()."""
@@ -380,6 +438,139 @@ def _fire_consolidation() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Isolated turn runner (used by BackgroundAgent)
+# ---------------------------------------------------------------------------
+
+async def _run_isolated_turn(
+    history: list[dict],
+    user_text: str,
+    max_iters: int = MAX_TOOL_ITERS,
+) -> str:
+    """Run an agent turn with a caller-supplied history list.
+    
+    Does NOT touch the shared _history — safe to run concurrently with the
+    main brain loop as a background sub-agent.
+    """
+    history.append({"role": "user", "content": user_text})
+    llm = get_llm()
+    for _ in range(max_iters):
+        result = await llm.chat(history, tools=TOOL_SCHEMAS)
+        if result.tool_calls:
+            history.append({
+                "role": "assistant",
+                "content": result.content or None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
+                    }
+                    for tc in result.tool_calls
+                ],
+            })
+            for tc in result.tool_calls:
+                logger.info("BG Tool: %s(%s)", tc.name, tc.arguments)
+                tool_output = await collector.call(tc.name, tc.arguments)
+                if isinstance(tool_output, str) and tool_output.startswith("data:image/png;base64,"):
+                    tool_output = "[screenshot taken]"
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": tc.name,
+                    "content": str(tool_output)[:_TOOL_RESULT_MAX],
+                })
+        else:
+            reply = result.content or "Done."
+            history.append({"role": "assistant", "content": reply})
+            return reply
+    return "Task reached the iteration limit."
+
+
+# ---------------------------------------------------------------------------
+# Background sub-agent
+# ---------------------------------------------------------------------------
+
+class BackgroundAgent:
+    """Runs isolated LLM sessions as asyncio Tasks so Friday stays responsive."""
+
+    def __init__(self) -> None:
+        self._tasks: dict[str, asyncio.Task] = {}
+
+    async def start(self, task_id: str, description: str, speech_q: asyncio.Queue) -> None:
+        """Schedule description as a background task. Returns immediately."""
+        task = asyncio.create_task(
+            self._execute(task_id, description, speech_q),
+            name=f"friday-bg-{task_id}",
+        )
+        self._tasks[task_id] = task
+        logger.info("Background task '%s' started: %s", task_id, description[:80])
+
+    async def _execute(self, task_id: str, description: str, speech_q: asyncio.Queue) -> None:
+        bg_history: list[dict] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a background sub-agent for Friday AI. "
+                    "Complete the task using tools, then summarise the result in one or two "
+                    "sentences for the user to hear aloud. Be concise."
+                ),
+            }
+        ]
+        try:
+            reply = await _run_isolated_turn(bg_history, description)
+            logger.info("BG task '%s' done: %s", task_id, reply[:100])
+            await speech_q.put(f"Background task done: {reply}")
+        except asyncio.CancelledError:
+            logger.info("BG task '%s' cancelled.", task_id)
+        except Exception as exc:
+            logger.warning("BG task '%s' failed: %s", task_id, exc)
+            await speech_q.put(f"Background task failed: {str(exc)[:120]}")
+        finally:
+            self._tasks.pop(task_id, None)
+
+    def cancel(self, task_id: str) -> bool:
+        task = self._tasks.get(task_id)
+        if task and not task.done():
+            task.cancel()
+            return True
+        return False
+
+    def list_tasks(self) -> list[str]:
+        return [tid for tid, t in self._tasks.items() if not t.done()]
+
+
+def _register_background_tools() -> None:
+    """Register background-task tools. Must be called after pipeline queues are created."""
+
+    @collector.tool()
+    async def run_background_task(task: str) -> str:
+        """
+        Run a slow or long task in the background so Friday stays available for conversation.
+        Good for: file downloads, web research, code generation, long bash commands, etc.
+        Friday will speak the result aloud when the task finishes.
+        """
+        task_id = f"task_{int(time.time())}"
+        await _background_agent.start(task_id, task, _speech_q)
+        return f"Background task '{task_id}' started. I'll let you know when it's done, boss."
+
+    @collector.tool()
+    async def list_background_tasks() -> str:
+        """List all currently running background tasks."""
+        tasks = _background_agent.list_tasks()
+        return f"Running: {tasks}" if tasks else "No background tasks running."
+
+    @collector.tool()
+    async def cancel_background_task(task_id: str) -> str:
+        """Cancel a running background task by its ID."""
+        ok = _background_agent.cancel(task_id)
+        return f"Cancelled '{task_id}'." if ok else f"No running task with id '{task_id}'."
+
+    logger.info(
+        "Background tools registered: run_background_task, list_background_tasks, cancel_background_task"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Microphone capture with energy VAD
 # ---------------------------------------------------------------------------
 
@@ -501,10 +692,73 @@ async def speak(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline coroutines
+# ---------------------------------------------------------------------------
+
+async def _mic_producer() -> None:
+    """Always-running mic pipeline: optional wake word → record utterance → transcribe → queue."""
+    wake_model = _load_wake_model()
+    mode = "wake-word" if wake_model else "always-on"
+    logger.info("Mic producer started (%s mode).", mode)
+
+    with MicCapture() as mic:
+        while True:
+            if wake_model:
+                print("💤  Waiting for wake word …   ", end="\r", flush=True)
+                await asyncio.to_thread(_scan_for_wake_word, mic, wake_model)
+                print("🎙️  Wake word! Listening …    ", end="\r", flush=True)
+            else:
+                print("🎤  Listening …               ", end="\r", flush=True)
+
+            audio = await asyncio.to_thread(mic.record_utterance)
+            if audio is None:
+                continue
+
+            print("🔄  Transcribing …            ", end="\r", flush=True)
+            text = await transcribe(audio)
+            if text:
+                print(f"\nYou:    {text}")
+                await _utterance_q.put(text)
+
+
+async def _brain_consumer() -> None:
+    """Consume utterances through the LLM agent. Runs concurrently with TTS and mic."""
+    while True:
+        text = await _utterance_q.get()
+        print("🧠  Thinking …                ", end="\r", flush=True)
+        try:
+            reply = await _run_turn(text)
+        except Exception as exc:
+            logger.error("Brain error: %s", exc, exc_info=True)
+            reply = "Sorry, I ran into an error. Please try again."
+        print(f"FRIDAY: {reply}\n")
+        await _speech_q.put(reply)
+        _utterance_q.task_done()
+
+
+async def _tts_consumer() -> None:
+    """Drain the speech queue, speaking each item. Always runs — never blocks mic or brain."""
+    while True:
+        text = await _speech_q.get()
+        try:
+            await speak(text)
+        except Exception as exc:
+            logger.error("TTS error: %s", exc)
+        _speech_q.task_done()
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
+    global _speech_q, _utterance_q, _background_agent
+
+    _speech_q = asyncio.Queue(maxsize=20)
+    _utterance_q = asyncio.Queue(maxsize=10)
+    _background_agent = BackgroundAgent()
+    _register_background_tools()
+
     print("\n🤖  Loading models …  (first run downloads ~600 MB — do not close)")
 
     # Spinner so the terminal never looks frozen during download
@@ -532,29 +786,13 @@ async def main() -> None:
 
     greeting = "Friday online. What do you need, boss?"
     print(f"\nFRIDAY: {greeting}\n")
-    await speak(greeting)
+    await speak(greeting)   # speak before pipeline starts (no queue needed yet)
 
-    with MicCapture() as mic:
-        while True:
-            print("🎤  Listening …", end="\r", flush=True)
-            audio = mic.record_utterance()
-
-            if audio is None:
-                continue
-
-            print("🔄  Transcribing …", end="\r", flush=True)
-            text = await transcribe(audio)
-
-            if not text:
-                continue
-
-            print(f"\nYou:    {text}")
-            print("🧠  Thinking …", end="\r", flush=True)
-
-            reply = await _run_turn(text)
-
-            print(f"FRIDAY: {reply}\n")
-            await speak(reply)
+    await asyncio.gather(
+        _mic_producer(),
+        _brain_consumer(),
+        _tts_consumer(),
+    )
 
 
 if __name__ == "__main__":

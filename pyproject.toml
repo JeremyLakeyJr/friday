@@ -31,6 +31,8 @@ voice = [
     "sounddevice>=0.4",     # Mic capture + speaker playback
     "soundfile>=0.12",      # WAV I/O
     "numpy>=1.24",          # Audio array processing
+    "openwakeword>=0.6.0",  # Optional wake-word detection (hey_jarvis, alexa, etc.)
+    "onnxruntime>=1.16",    # ONNX inference backend required by openwakeword
 ]
 
 [project.scripts]
