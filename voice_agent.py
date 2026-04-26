@@ -85,11 +85,12 @@ MAX_HISTORY      = 12   # keep last N messages (6 turns) — voice is conversati
 _HISTORY_CHAR_BUDGET = 16_000
 _TOOL_RESULT_MAX     = 1_200   # max chars kept from any single tool result
 
-# Wake word config  (set WAKE_WORD_ENABLED=1 in .env to enable)
-WAKE_WORD_ENABLED   = os.getenv("WAKE_WORD_ENABLED",   "0") == "1"
-WAKE_WORD_MODEL     = os.getenv("WAKE_WORD_MODEL",     "hey_jarvis")  # alexa, hey_mycroft …
-WAKE_WORD_THRESHOLD = float(os.getenv("WAKE_WORD_THRESHOLD", "0.5"))
-_WAKE_CHUNK         = 1280    # 80 ms of 16 kHz audio per openwakeword frame
+# Wake word — uses faster-whisper to spot any keyword (default: "friday")
+# Set WAKE_WORD_ENABLED=1 in .env to activate; configure the trigger phrase below.
+WAKE_WORD_ENABLED  = os.getenv("WAKE_WORD_ENABLED",  "0") == "1"
+WAKE_WORD_KEYWORD  = os.getenv("WAKE_WORD_KEYWORD",  "friday").lower()
+_WAKE_SILENCE_SECS = 0.7   # shorter silence timeout when scanning for the wake word
+_WAKE_MAX_SECS     = 3.0   # discard clip if speech runs longer than this (not a wake word)
 
 # Messages evicted from context during the current turn, pending consolidation to memory.
 _pending_consolidation: list[dict] = []
@@ -135,53 +136,64 @@ def _get_tts():
 
 
 # ---------------------------------------------------------------------------
-# Wake word utilities
+# Wake word utilities — Whisper-based keyword spotting, no extra model needed
 # ---------------------------------------------------------------------------
 
-def _load_wake_model():
-    """Load the openwakeword model. Returns None if disabled or not installed."""
-    if not WAKE_WORD_ENABLED:
-        return None
-    try:
-        from openwakeword.model import Model  # type: ignore[import]
-        logger.info("Loading wake word model '%s' …", WAKE_WORD_MODEL)
-        m = Model(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
-        logger.info("Wake word ready. Say '%s' to activate.", WAKE_WORD_MODEL.replace("_", " "))
-        return m
-    except ImportError:
-        logger.warning(
-            "openwakeword not installed — wake word disabled. "
-            "Install with: uv sync --extra voice"
-        )
-        return None
-    except Exception as exc:
-        logger.warning("Wake word model load failed: %s — falling back to always-on.", exc)
-        return None
+def _record_wake_clip(mic: "MicCapture") -> np.ndarray | None:
+    """Record a short audio clip (up to _WAKE_MAX_SECS) for wake word checking.
+    
+    Uses shorter silence timeout and discards clips that are too long
+    (the user is talking normally, not saying the wake word).
+    """
+    chunks: list[np.ndarray] = []
+    silent_chunks = 0
+    speech_chunks = 0
+    in_speech = False
+    silence_limit = int(_WAKE_SILENCE_SECS / CHUNK_SECS)
+    min_speech    = int(0.15 / CHUNK_SECS)
+    max_speech    = int(_WAKE_MAX_SECS / CHUNK_SECS)
 
-
-def _scan_for_wake_word(mic: "MicCapture", wake_model: Any) -> None:
-    """Block (in a thread) until the wake word is detected, then return."""
-    buf = np.array([], dtype=np.float32)
-    while True:
+    while speech_chunks < max_speech:
         try:
-            chunk = mic._q.get(timeout=0.3)
+            chunk = mic._q.get(timeout=0.5)
         except queue.Empty:
+            if in_speech:
+                break
             continue
-        buf = np.concatenate([buf, chunk.flatten()])
-        while len(buf) >= _WAKE_CHUNK:
-            frame = buf[:_WAKE_CHUNK]
-            buf = buf[_WAKE_CHUNK:]
-            prediction = wake_model.predict(frame)
-            for _, scores in prediction.items():
-                max_score = float(np.max(scores)) if len(scores) > 0 else 0.0
-                if max_score >= WAKE_WORD_THRESHOLD:
-                    # Drain stale mic audio so we don't transcribe the wake phrase
-                    while not mic._q.empty():
-                        try:
-                            mic._q.get_nowait()
-                        except queue.Empty:
-                            break
-                    return
+        rms = float(np.sqrt(np.mean(chunk ** 2)))
+        if rms >= VAD_THRESHOLD:
+            in_speech = True
+            speech_chunks += 1
+            silent_chunks = 0
+            chunks.append(chunk)
+        elif in_speech:
+            silent_chunks += 1
+            chunks.append(chunk)
+            if silent_chunks >= silence_limit:
+                break
+
+    if speech_chunks < min_speech or not chunks:
+        return None
+    return np.concatenate(chunks, axis=0).flatten()
+
+
+async def _scan_for_wake_word(mic: "MicCapture") -> None:
+    """Continuously transcribe short clips until WAKE_WORD_KEYWORD is heard."""
+    logger.debug("Wake word scanner active — listening for '%s'.", WAKE_WORD_KEYWORD)
+    while True:
+        audio = await asyncio.to_thread(_record_wake_clip, mic)
+        if audio is None:
+            continue
+        text = await transcribe(audio)
+        if WAKE_WORD_KEYWORD in text.lower():
+            logger.info("Wake word '%s' detected (heard: '%s').", WAKE_WORD_KEYWORD, text.strip())
+            # Drain stale buffer so the wake word clip isn't re-transcribed
+            while not mic._q.empty():
+                try:
+                    mic._q.get_nowait()
+                except queue.Empty:
+                    break
+            return
 
 class _ToolCollector:
     """Minimal shim that collects tool functions registered via @mcp.tool()."""
@@ -519,12 +531,12 @@ class BackgroundAgent:
         try:
             reply = await _run_isolated_turn(bg_history, description)
             logger.info("BG task '%s' done: %s", task_id, reply[:100])
-            await speech_q.put(f"Background task done: {reply}")
+            await speech_q.put((f"Boss, background task done: {reply}", True))
         except asyncio.CancelledError:
             logger.info("BG task '%s' cancelled.", task_id)
         except Exception as exc:
             logger.warning("BG task '%s' failed: %s", task_id, exc)
-            await speech_q.put(f"Background task failed: {str(exc)[:120]}")
+            await speech_q.put((f"Background task failed: {str(exc)[:120]}", True))
         finally:
             self._tasks.pop(task_id, None)
 
@@ -691,30 +703,46 @@ async def speak(text: str) -> None:
     await asyncio.to_thread(speak_sync, text)
 
 
+def _play_notification_chime() -> None:
+    """Play a short ascending two-tone chime to alert the user a background task finished."""
+    sr = SAMPLE_RATE
+
+    def _tone(freq: float, dur: float, vol: float = 0.22) -> np.ndarray:
+        t = np.linspace(0, dur, int(sr * dur), endpoint=False)
+        return (vol * np.sin(2 * np.pi * freq * t) * np.exp(-4.0 * t / dur)).astype(np.float32)
+
+    chime = np.concatenate([
+        _tone(660, 0.14),
+        np.zeros(int(sr * 0.05), dtype=np.float32),
+        _tone(880, 0.20),
+    ])
+    sd.play(chime, sr)
+    sd.wait()
+
+
 # ---------------------------------------------------------------------------
 # Pipeline coroutines
 # ---------------------------------------------------------------------------
 
 async def _mic_producer() -> None:
     """Always-running mic pipeline: optional wake word → record utterance → transcribe → queue."""
-    wake_model = _load_wake_model()
-    mode = "wake-word" if wake_model else "always-on"
-    logger.info("Mic producer started (%s mode).", mode)
+    mode = "wake-word" if WAKE_WORD_ENABLED else "always-on"
+    logger.info("Mic producer started (%s, keyword='%s').", mode, WAKE_WORD_KEYWORD)
 
     with MicCapture() as mic:
         while True:
-            if wake_model:
-                print("💤  Waiting for wake word …   ", end="\r", flush=True)
-                await asyncio.to_thread(_scan_for_wake_word, mic, wake_model)
-                print("🎙️  Wake word! Listening …    ", end="\r", flush=True)
+            if WAKE_WORD_ENABLED:
+                print(f"💤  Say '{WAKE_WORD_KEYWORD}' to activate …   ", end="\r", flush=True)
+                await _scan_for_wake_word(mic)
+                print("🎙️  Wake word! Listening …             ", end="\r", flush=True)
             else:
-                print("🎤  Listening …               ", end="\r", flush=True)
+                print("🎤  Listening …                        ", end="\r", flush=True)
 
             audio = await asyncio.to_thread(mic.record_utterance)
             if audio is None:
                 continue
 
-            print("🔄  Transcribing …            ", end="\r", flush=True)
+            print("🔄  Transcribing …                     ", end="\r", flush=True)
             text = await transcribe(audio)
             if text:
                 print(f"\nYou:    {text}")
@@ -725,22 +753,29 @@ async def _brain_consumer() -> None:
     """Consume utterances through the LLM agent. Runs concurrently with TTS and mic."""
     while True:
         text = await _utterance_q.get()
-        print("🧠  Thinking …                ", end="\r", flush=True)
+        print("🧠  Thinking …                         ", end="\r", flush=True)
         try:
             reply = await _run_turn(text)
         except Exception as exc:
             logger.error("Brain error: %s", exc, exc_info=True)
             reply = "Sorry, I ran into an error. Please try again."
         print(f"FRIDAY: {reply}\n")
-        await _speech_q.put(reply)
+        await _speech_q.put((reply, False))
         _utterance_q.task_done()
 
 
 async def _tts_consumer() -> None:
-    """Drain the speech queue, speaking each item. Always runs — never blocks mic or brain."""
+    """Drain the speech queue. Always runs — never blocks mic or brain.
+    
+    Queue items are (text, is_alert) tuples.
+    is_alert=True plays a chime before speaking (used for background task completions).
+    """
     while True:
-        text = await _speech_q.get()
+        item = await _speech_q.get()
+        text, is_alert = item if isinstance(item, tuple) else (item, False)
         try:
+            if is_alert:
+                await asyncio.to_thread(_play_notification_chime)
             await speak(text)
         except Exception as exc:
             logger.error("TTS error: %s", exc)
