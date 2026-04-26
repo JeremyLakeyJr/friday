@@ -282,9 +282,9 @@ set_env() {
   rm -f .env.bak
 }
 
-# Read current value of KEY from .env
+# Read current value of KEY from .env (always exits 0 — key may be absent)
 get_env() {
-  grep "^${1}=" .env 2>/dev/null | cut -d= -f2- | tr -d "'\""
+  grep "^${1}=" .env 2>/dev/null | cut -d= -f2- | tr -d "'\"" || true
 }
 
 # prompt_input <label> <KEY> [--secret] [--default <val>]
@@ -299,7 +299,7 @@ prompt_input() {
     esac
     shift
   done
-  local current; current=$(get_env "$key")
+  local current; current=$(get_env "$key") || true
   local hint="${current:-${default}}"
   local display_hint=""
   if [[ -n "$hint" ]]; then
