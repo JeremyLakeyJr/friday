@@ -88,7 +88,7 @@ def register(mcp):
         Returns top 5 results with title, URL, and snippet.
         """
         def _sync_search():
-            from duckduckgo_search import DDGS
+            from ddgs import DDGS
             results = []
             with DDGS() as ddgs:
                 for r in ddgs.text(query, max_results=5):

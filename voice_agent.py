@@ -78,8 +78,12 @@ TTS_SPEAKER      = os.getenv("TTS_SPEAKER",  "") or None
 TTS_LANGUAGE     = os.getenv("TTS_LANGUAGE", "en")
 
 VOICE_CHAT_ID    = 0    # fixed chat-id for browser ContextVar (single desktop user)
-MAX_TOOL_ITERS   = 10
-MAX_HISTORY      = 40   # keep last N messages before trimming
+MAX_TOOL_ITERS   = 6
+MAX_HISTORY      = 12   # keep last N messages (6 turns) — voice is conversational
+# Character budget for history passed to LLM (leave room for system prompt + tools).
+# gpt-4o-mini cap ≈ 8000 tokens → ~32 000 chars; tools+system ≈ 14 000 → 18 000 left.
+_HISTORY_CHAR_BUDGET = 16_000
+_TOOL_RESULT_MAX     = 1_200   # max chars kept from any single tool result
 
 # ---------------------------------------------------------------------------
 # Lazy model handles
@@ -232,8 +236,15 @@ def _init_history(user_text: str = "") -> None:
 
 
 def _trim_history() -> None:
+    """Trim to MAX_HISTORY messages, then further trim if over char budget."""
     if len(_history) > MAX_HISTORY + 1:
         _history[:] = [_history[0]] + _history[-(MAX_HISTORY):]
+    # Drop oldest non-system messages until we're within the char budget.
+    while True:
+        total = sum(len(str(m.get("content") or "")) for m in _history)
+        if total <= _HISTORY_CHAR_BUDGET or len(_history) <= 2:
+            break
+        _history.pop(1)  # remove oldest message after system prompt
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +261,7 @@ async def _run_turn(user_text: str) -> str:
     llm = get_llm()
 
     for _ in range(MAX_TOOL_ITERS):
+        _trim_history()
         result = await llm.chat(_history, tools=TOOL_SCHEMAS)
 
         if result.tool_calls:
@@ -278,7 +290,7 @@ async def _run_turn(user_text: str) -> str:
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "name": tc.name,
-                    "content": str(tool_output),
+                    "content": str(tool_output)[:_TOOL_RESULT_MAX],
                 })
                 logger.debug("Tool result: %s", str(tool_output)[:200])
 
