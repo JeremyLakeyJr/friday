@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.error import NetworkError, TimedOut
+from telegram.error import Conflict, NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -475,7 +475,7 @@ def main():
 
     async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         err = context.error
-        if isinstance(err, (TimedOut, NetworkError)):
+        if isinstance(err, (TimedOut, NetworkError, Conflict)):
             logger.debug("Transient Telegram error (ignored): %s", err)
             return
         logger.error("Unhandled exception", exc_info=err)

@@ -80,7 +80,7 @@ class GeminiLLM:
         from google.genai import types
 
         system_text = ""
-        history: list[dict] = []
+        contents: list[Any] = []
 
         for m in messages:
             role = m.get("role")
@@ -90,12 +90,15 @@ class GeminiLLM:
                 system_text = content
 
             elif role == "user":
-                history.append({"role": "user", "parts": [{"text": content}]})
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part(text=content)],
+                ))
 
             elif role == "assistant":
                 parts: list[Any] = []
                 if content:
-                    parts.append({"text": content})
+                    parts.append(types.Part(text=content))
                 for tc in m.get("tool_calls") or []:
                     fn = tc["function"]
                     try:
@@ -106,25 +109,19 @@ class GeminiLLM:
                         function_call=types.FunctionCall(name=fn["name"], args=args)
                     ))
                 if parts:
-                    history.append({"role": "model", "parts": parts})
+                    contents.append(types.Content(role="model", parts=parts))
 
             elif role == "tool":
-                history.append({
-                    "role": "user",
-                    "parts": [types.Part(function_response=types.FunctionResponse(
+                contents.append(types.Content(
+                    role="user",
+                    parts=[types.Part(function_response=types.FunctionResponse(
                         name=m.get("name") or m.get("tool_call_id", "tool"),
                         response={"result": content},
                     ))],
-                })
+                ))
 
-        # Split history: everything before the last turn goes into chat history;
-        # the last user/tool turn is sent as the new message.
-        if history:
-            *prior, last = history
-            send_message = last["parts"]
-        else:
-            prior = []
-            send_message = [{"text": "Hello"}]
+        if not contents:
+            contents.append(types.Content(role="user", parts=[types.Part(text="Hello")]))
 
         # Build tool declarations
         gemini_tools = None
@@ -144,12 +141,11 @@ class GeminiLLM:
             tools=gemini_tools,
         )
 
-        chat = self._client.aio.chats.create(
+        response = await self._client.aio.models.generate_content(
             model=self._model_name,
-            history=prior,
+            contents=contents,
             config=cfg,
         )
-        response = await chat.send_message(message=send_message)
 
         tool_calls = []
         text = ""
