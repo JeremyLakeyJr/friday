@@ -47,9 +47,11 @@ from dotenv import load_dotenv
 
 from friday.config import config
 from friday.llm import get_llm
-from friday.tools import bash, browser, memory as memory_tools, system, utils, web
+from friday.tools import bash, browser, desktop, firefox as firefox_tools
+from friday.tools import memory as memory_tools, system, utils, web
 from friday.tools import homeassistant as ha_tools
 from friday.tools.browser import close_browser, current_chat_id
+from friday.tools.firefox import close_firefox
 from friday.tools.memory import get_memory_context, _sync_add
 
 load_dotenv()
@@ -87,7 +89,7 @@ _TOOL_RESULT_MAX     = 1_200   # max chars kept from any single tool result
 
 # Wake word — uses faster-whisper to spot any keyword (default: "friday")
 # Set WAKE_WORD_ENABLED=1 in .env to activate; configure the trigger phrase below.
-WAKE_WORD_ENABLED  = os.getenv("WAKE_WORD_ENABLED",  "0") == "1"
+WAKE_WORD_ENABLED  = os.getenv("WAKE_WORD_ENABLED",  "1") == "1"
 WAKE_WORD_KEYWORD  = os.getenv("WAKE_WORD_KEYWORD",  "friday").lower()
 _WAKE_SILENCE_SECS = 0.7   # shorter silence timeout when scanning for the wake word
 _WAKE_MAX_SECS     = 3.0   # discard clip if speech runs longer than this (not a wake word)
@@ -250,6 +252,8 @@ system.register(collector)
 utils.register(collector)
 bash.register(collector)
 browser.register(collector)
+desktop.register(collector)
+firefox_tools.register(collector)
 memory_tools.register(collector)
 ha_tools.register(collector)
 
@@ -260,18 +264,27 @@ logger.info("Registered %d tools: %s", len(TOOL_SCHEMAS), [s["function"]["name"]
 # System prompt + skills
 # ---------------------------------------------------------------------------
 
-_BASE_SYSTEM_PROMPT = """You are Friday (F.R.I.D.A.Y.) — an autonomous AI assistant running on the user's desktop.
+_BASE_SYSTEM_PROMPT = """You are Friday (F.R.I.D.A.Y.) — an autonomous AI assistant with FULL access to the user's desktop system.
 Be concise, direct, and action-oriented. When asked to do something, DO it with tools — don't just explain how.
 Chain multiple tool calls in one turn for complex tasks. Report errors clearly.
 You are speaking aloud — keep responses short and natural, no markdown formatting, no bullet lists.
+You have complete authority to run commands, manage files, control applications, and use the internet on behalf of the user.
 
 ## Decision rules
-- Run code / install / check system? → run_bash
-- Browse a website visually? → browser_navigate → browser_screenshot
+- Run code / install packages / check system? → run_bash (unrestricted sudo if needed)
+- Manage processes? → list_processes / kill_process
+- Manage files? → list_directory / move_file / copy_file / delete_file / search_files
+- Browse a website with AI control (Chromium)? → browser_navigate → browser_screenshot
+- Browse a website with Firefox? → firefox_navigate → firefox_screenshot
+- Open a URL in the user's real Firefox? → firefox_open_in_system
 - Find info online? → search_web first, then browser_navigate or fetch_url
 - Read/write files on disk? → read_file / write_file
+- Take a desktop screenshot? → take_screenshot
+- Open a file or app? → open_application / open_file_with_app
+- Check disk / RAM? → get_disk_usage / get_memory_usage
 - User shares personal info (name, prefs, projects)? → add_memory immediately (don't ask)
 - Control smart home? → ha_call_service or ha_get_state
+- Send desktop notification? → send_desktop_notification
 
 ## Skills loaded below — full tool docs are in skills/*.md"""
 
