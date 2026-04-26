@@ -469,18 +469,16 @@ def main():
     if not token:
         sys.exit("TELEGRAM_TOKEN is not set. Get one from @BotFather and add it to .env")
 
-    app = Application.builder().token(token).build()
+    async def _shutdown(_app):
+        from friday.tools.browser import close_browser
+        await close_browser()
+
+    app = Application.builder().token(token).post_shutdown(_shutdown).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
-
-    async def _shutdown(_app):
-        from friday.tools.browser import close_browser
-        await close_browser()
-
-    app.post_shutdown(_shutdown)
 
     logger.info("Friday agent starting (LLM_PROVIDER=%s)…", config.LLM_PROVIDER)
     app.run_polling(drop_pending_updates=True)
