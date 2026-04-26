@@ -35,6 +35,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -382,8 +383,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user_text.strip():
         return
 
-    # Show typing indicator
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    # Show typing indicator (best-effort — ignore transient timeouts)
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except (TimedOut, NetworkError):
+        pass
 
     lock = _chat_locks.setdefault(chat_id, asyncio.Lock())
     async with lock:
@@ -469,6 +473,13 @@ def main():
     if not token:
         sys.exit("TELEGRAM_TOKEN is not set. Get one from @BotFather and add it to .env")
 
+    async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        err = context.error
+        if isinstance(err, (TimedOut, NetworkError)):
+            logger.debug("Transient Telegram error (ignored): %s", err)
+            return
+        logger.error("Unhandled exception", exc_info=err)
+
     async def _shutdown(_app):
         from friday.tools.browser import close_browser
         await close_browser()
@@ -479,6 +490,7 @@ def main():
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
+    app.add_error_handler(_error_handler)
 
     logger.info("Friday agent starting (LLM_PROVIDER=%s)…", config.LLM_PROVIDER)
     app.run_polling(drop_pending_updates=True)
