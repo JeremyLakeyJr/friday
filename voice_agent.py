@@ -45,7 +45,7 @@ import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
 
-from friday import config
+from friday.config import config
 from friday.llm import get_llm
 from friday.tools import bash, browser, memory as memory_tools, system, utils, web
 from friday.tools import homeassistant as ha_tools
