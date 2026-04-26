@@ -8,6 +8,7 @@ dependencies = [
     "fastmcp",
     "httpx",
     "python-dotenv",
+    "PyYAML>=6.0",
     # Telegram agent
     "python-telegram-bot>=21.0",
     # Browser automation

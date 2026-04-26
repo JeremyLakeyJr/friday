@@ -37,5 +37,17 @@ class Config:
     HA_URL: str = os.getenv("HA_URL", "http://homeassistant.local:8123")
     HA_TOKEN: str = os.getenv("HA_TOKEN", "")
 
+    # MCP server config
+    FRIDAY_MCP_WORKSPACE_ROOT: str = os.getenv("FRIDAY_MCP_WORKSPACE_ROOT", ".")
+    FRIDAY_MCP_SKILLS_ROOT: str = os.getenv("FRIDAY_MCP_SKILLS_ROOT", "./skills")
+    FRIDAY_MCP_ALLOW_EXTERNAL_PATHS: bool = os.getenv("FRIDAY_MCP_ALLOW_EXTERNAL_PATHS", "false").lower() in {"1", "true", "yes"}
+    FRIDAY_MCP_DEFAULT_COMMAND_TIMEOUT: int = int(os.getenv("FRIDAY_MCP_DEFAULT_COMMAND_TIMEOUT", "30"))
+    FRIDAY_MCP_MAX_FETCH_CHARS: int = int(os.getenv("FRIDAY_MCP_MAX_FETCH_CHARS", "8000"))
+    FRIDAY_MCP_TRANSPORT: str = os.getenv("FRIDAY_MCP_TRANSPORT", "sse")
+
+    # Auto-browser service (LvcidPsyche/auto-browser)
+    AUTO_BROWSER_URL: str = os.getenv("AUTO_BROWSER_URL", "")
+    AUTO_BROWSER_TOKEN: str = os.getenv("AUTO_BROWSER_TOKEN", "")
+
 
 config = Config()

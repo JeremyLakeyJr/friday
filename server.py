@@ -3,11 +3,17 @@ Friday MCP Server — Entry Point
 Run with: python server.py
 """
 
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
-from friday.tools import register_all_tools
+
+from friday.config import config
 from friday.prompts import register_all_prompts
 from friday.resources import register_all_resources
-from friday.config import config
+from friday.tools import register_all_tools
+from friday.tools.skill_store import SkillStore
+
+skill_store = SkillStore(Path(config.FRIDAY_MCP_SKILLS_ROOT).expanduser().resolve())
 
 # Create the MCP server instance
 mcp = FastMCP(
@@ -20,12 +26,14 @@ mcp = FastMCP(
 )
 
 # Register tools, prompts, and resources
-register_all_tools(mcp)
+register_all_tools(mcp, skill_store=skill_store)
 register_all_prompts(mcp)
-register_all_resources(mcp)
+register_all_resources(mcp, skill_store=skill_store)
+
 
 def main():
-    mcp.run(transport='sse')
+    mcp.run(transport=config.FRIDAY_MCP_TRANSPORT)
+
 
 if __name__ == "__main__":
     main()
