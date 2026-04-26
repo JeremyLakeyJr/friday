@@ -261,67 +261,15 @@ else
   warn "ffmpeg not found — required for voice pipeline"
 fi
 
-# ── Python deps ───────────────────────────────────────────────────────────────
-step "Installing Python dependencies"
-uv sync
-success "Core dependencies installed"
-
-# ── Playwright Chromium ───────────────────────────────────────────────────────
-step "Installing Playwright Chromium browser"
-uv run playwright install chromium
-success "Playwright Chromium ready"
-
-# ── Voice extras ──────────────────────────────────────────────────────────────
-INSTALLED_VOICE=false
-if [[ "$HAS_MIC" == true ]]; then
-  step "Voice agent (optional)"
-  echo -e "  Microphone detected. Voice deps add Coqui TTS + faster-whisper (~600 MB models on first run)."
-  if ask "Install voice extras?"; then
-    uv sync --extra voice
-    success "Voice extras installed"
-    INSTALLED_VOICE=true
-    if [[ "$HAS_NVIDIA" == true ]]; then
-      info "CUDA GPU found — add WHISPER_DEVICE=cuda to .env for faster transcription"
-    fi
-  else
-    info "Skipped. Install later: uv sync --extra voice"
-  fi
-else
-  info "Voice extras skipped (no microphone detected). Install later: uv sync --extra voice"
-fi
-
-# ── Auto-browser ──────────────────────────────────────────────────────────────
-SETUP_AUTO_BROWSER=false
-if [[ "$HAS_DOCKER" == true ]]; then
-  step "Auto-browser (optional)"
-  echo -e "  Docker available. auto-browser gives Friday a managed browser with human takeover and auth profiles."
-  if ask "Set up auto-browser?"; then
-    if [[ ! -d "external/auto-browser" ]]; then
-      info "Cloning LvcidPsyche/auto-browser..."
-      mkdir -p external
-      git clone --depth 1 https://github.com/LvcidPsyche/auto-browser.git external/auto-browser
-      success "Cloned to external/auto-browser"
-    else
-      success "external/auto-browser already present"
-    fi
-    SETUP_AUTO_BROWSER=true
-  else
-    info "Skipped. Set up later:"
-    info "  git clone https://github.com/LvcidPsyche/auto-browser.git external/auto-browser"
-  fi
-fi
-
-# ── .env setup ────────────────────────────────────────────────────────────────
+# ── Environment configuration ─────────────────────────────────────────────────
+# Done BEFORE heavy installs so config is captured even if a later step fails.
 step "Environment configuration"
 
-# Bootstrap from example if .env doesn't exist yet
 [[ ! -f ".env" ]] && cp .env.example .env && success ".env created from .env.example"
 
-# ── Helpers ──
-# Write or update a single KEY=VALUE in .env (handles existing, commented, or absent keys)
+# Write or update a single KEY=VALUE in .env
 set_env() {
   local key="$1" value="$2"
-  # Escape value for use as sed replacement (& and | need escaping)
   local esc_value
   esc_value=$(printf '%s' "$value" | sed 's/[&|\\]/\\&/g')
   if grep -q "^${key}=" .env 2>/dev/null; then
@@ -334,12 +282,12 @@ set_env() {
   rm -f .env.bak
 }
 
-# Read current value of KEY from .env (strips surrounding quotes)
+# Read current value of KEY from .env
 get_env() {
   grep "^${1}=" .env 2>/dev/null | cut -d= -f2- | tr -d "'\""
 }
 
-# Prompt: prompt_input <display_label> <KEY> [--secret] [--default <fallback>]
+# prompt_input <label> <KEY> [--secret] [--default <val>]
 prompt_input() {
   local label="$1" key="$2"
   local secret=false default=""
@@ -351,27 +299,18 @@ prompt_input() {
     esac
     shift
   done
-
-  local current
-  current=$(get_env "$key")
+  local current; current=$(get_env "$key")
   local hint="${current:-${default}}"
   local display_hint=""
   if [[ -n "$hint" ]]; then
-    if [[ "$secret" == true ]]; then
-      display_hint=" [****]"
-    else
-      display_hint=" [${hint}]"
-    fi
+    [[ "$secret" == true ]] && display_hint=" [****]" || display_hint=" [${hint}]"
   fi
-
   local val
   if [[ "$secret" == true ]]; then
     read -r -s -p "  ${label}${display_hint}: " val; echo ""
   else
     read -r -p "  ${label}${display_hint}: " val
   fi
-
-  # Use entered value, fall back to current, then default
   val="${val:-${current:-${default}}}"
   if [[ -n "$val" ]]; then
     set_env "$key" "$val"
@@ -382,7 +321,7 @@ prompt_input() {
 }
 
 if [[ "$NON_INTERACTIVE" == true ]]; then
-  info "Non-interactive mode — skipping guided .env setup. Edit .env manually."
+  info "Non-interactive — skipping guided setup. Edit .env manually."
 else
   echo ""
   echo -e "  ${BOLD}Guided configuration${NC} — press Enter to keep the value shown in brackets."
@@ -477,6 +416,56 @@ else
     echo -e "  Long-lived token → HA → Profile → Security → Long-Lived Access Tokens"
     prompt_input "Home Assistant Token" "HA_TOKEN" --secret
     echo ""
+  fi
+fi
+
+# ── Python deps ───────────────────────────────────────────────────────────────
+step "Installing Python dependencies"
+uv sync
+success "Core dependencies installed"
+
+# ── Playwright Chromium ───────────────────────────────────────────────────────
+step "Installing Playwright Chromium browser"
+uv run playwright install chromium
+success "Playwright Chromium ready"
+
+# ── Voice extras ──────────────────────────────────────────────────────────────
+INSTALLED_VOICE=false
+if [[ "$HAS_MIC" == true ]]; then
+  step "Voice agent (optional)"
+  echo -e "  Microphone detected. Voice deps add Coqui TTS + faster-whisper (~600 MB models on first run)."
+  if ask "Install voice extras?"; then
+    uv sync --extra voice
+    success "Voice extras installed"
+    INSTALLED_VOICE=true
+    if [[ "$HAS_NVIDIA" == true ]]; then
+      info "CUDA GPU found — add WHISPER_DEVICE=cuda to .env for faster transcription"
+    fi
+  else
+    info "Skipped. Install later: uv sync --extra voice"
+  fi
+else
+  info "Voice extras skipped (no microphone detected). Install later: uv sync --extra voice"
+fi
+
+# ── Auto-browser ──────────────────────────────────────────────────────────────
+SETUP_AUTO_BROWSER=false
+if [[ "$HAS_DOCKER" == true ]]; then
+  step "Auto-browser (optional)"
+  echo -e "  Docker available. auto-browser gives Friday a managed browser with human takeover and auth profiles."
+  if ask "Set up auto-browser?"; then
+    if [[ ! -d "external/auto-browser" ]]; then
+      info "Cloning LvcidPsyche/auto-browser..."
+      mkdir -p external
+      git clone --depth 1 https://github.com/LvcidPsyche/auto-browser.git external/auto-browser
+      success "Cloned to external/auto-browser"
+    else
+      success "external/auto-browser already present"
+    fi
+    SETUP_AUTO_BROWSER=true
+  else
+    info "Skipped. Set up later:"
+    info "  git clone https://github.com/LvcidPsyche/auto-browser.git external/auto-browser"
   fi
 fi
 
