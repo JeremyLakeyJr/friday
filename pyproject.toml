@@ -39,5 +39,16 @@ friday_agent = "agent:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Use PyTorch's CDN for torch/torchaudio so the self-contained CUDA wheel
+# is downloaded instead of many separate nvidia-* packages from PyPI.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126" }]
+torchaudio = [{ index = "pytorch-cu126" }]
+
 [tool.hatch.build.targets.wheel]
 packages = ["server.py", "agent.py"]
