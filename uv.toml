@@ -1,0 +1,9 @@
+# UV project configuration
+# These settings apply whenever uv runs inside this project directory.
+
+# CPU-only torch: Whisper STT and Coqui TTS work fine on CPU.
+# This avoids downloading large CUDA/nvidia packages.
+torch-backend = "cpu"
+
+# Keep parallel downloads reasonable.
+concurrent-downloads = 3

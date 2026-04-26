@@ -24,10 +24,13 @@ dependencies = [
 [project.optional-dependencies]
 # Desktop voice loop (local STT + Coqui TTS — no LiveKit, no cloud API key needed)
 voice = [
+    "torch>=2.0",           # CPU-only torch; source pinned to pytorch-cpu CDN in uv.toml
+    "torchaudio",
     "TTS>=0.22.0",          # Coqui TTS (XTTS-v2, tacotron2, etc.)
     "faster-whisper>=1.0",  # Local Whisper STT
     "sounddevice>=0.4",     # Mic capture + speaker playback
     "soundfile>=0.12",      # WAV I/O
+    "numpy>=1.24",          # Audio array processing
 ]
 
 [project.scripts]
@@ -39,16 +42,16 @@ friday_agent = "agent:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Use PyTorch's CDN for torch/torchaudio so the self-contained CUDA wheel
-# is downloaded instead of many separate nvidia-* packages from PyPI.
+# CPU-only torch: uses pytorch-cpu CDN to avoid large nvidia-* CUDA downloads.
+# Whisper STT and Coqui TTS work fine on CPU for voice assistant workloads.
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu126" }]
-torchaudio = [{ index = "pytorch-cu126" }]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
 
 [tool.hatch.build.targets.wheel]
 packages = ["server.py", "agent.py"]
