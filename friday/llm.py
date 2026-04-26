@@ -149,7 +149,18 @@ class GeminiLLM:
 
         tool_calls = []
         text = ""
-        for part in response.candidates[0].content.parts:
+
+        candidate = response.candidates[0] if response.candidates else None
+        parts = (candidate.content.parts if candidate and candidate.content else None) or []
+
+        if not parts and candidate:
+            import logging as _logging
+            _logging.getLogger("friday.llm").warning(
+                "Gemini returned no content parts (finish_reason=%s)",
+                getattr(candidate, "finish_reason", "unknown"),
+            )
+
+        for part in parts:
             if part.function_call and part.function_call.name:
                 fc = part.function_call
                 tool_calls.append(ToolCall(
