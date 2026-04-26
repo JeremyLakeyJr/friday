@@ -397,31 +397,75 @@ else
   prompt_input "Allowed User IDs (leave empty = public)" "ALLOWED_USER_IDS"
   echo ""
 
-  # ── LLM ──
-  echo -e "  ${BOLD}LLM Provider${NC}"
-  echo -e "  Options: ${CYAN}gemini${NC} (default) | openai | copilot | ollama"
-  prompt_input "Provider" "LLM_PROVIDER" --default "gemini"
-  LLM_CHOICE=$(get_env "LLM_PROVIDER")
+  # ── AI Provider ──
+  echo -e "  ${BOLD}AI Provider${NC}"
   echo ""
-  case "$LLM_CHOICE" in
-    gemini)
-      echo -e "  Google API key → https://aistudio.google.com/app/apikey"
+  echo -e "    1) ${CYAN}Gemini${NC}   (Google)        — free tier available · gemini-2.5-flash"
+  echo -e "    2) ${CYAN}OpenAI${NC}                   — GPT-4o · requires paid API credits"
+  echo -e "    3) ${CYAN}Copilot${NC} (GitHub Models)  — included with GitHub Copilot subscription"
+  echo -e "    4) ${CYAN}Ollama${NC}                   — fully local · no API key · no cloud"
+  echo ""
+
+  _cur_provider=$(get_env "LLM_PROVIDER")
+  case "$_cur_provider" in
+    openai)  _default_num=2 ;; copilot) _default_num=3 ;;
+    ollama)  _default_num=4 ;; *)       _default_num=1 ;;
+  esac
+
+  read -r -p "  Choose provider [${_default_num}]: " _pnum
+  _pnum="${_pnum:-${_default_num}}"
+  echo ""
+
+  case "$_pnum" in
+    1|gemini)
+      set_env "LLM_PROVIDER" "gemini"
+      echo -e "  ${BOLD}Gemini setup${NC}"
+      echo -e "  Default model : gemini-2.5-flash"
+      echo -e "  Other models  : gemini-2.5-pro  |  gemini-1.5-flash  |  gemini-1.5-pro"
+      echo -e "  Get API key   → ${CYAN}https://aistudio.google.com/app/apikey${NC}  (free)"
+      echo ""
       prompt_input "Google API Key" "GOOGLE_API_KEY" --secret
+      prompt_input "Model override (Enter = gemini-2.5-flash)" "LLM_MODEL"
       ;;
-    openai)
-      echo -e "  OpenAI API key → https://platform.openai.com/api-keys"
+    2|openai)
+      set_env "LLM_PROVIDER" "openai"
+      echo -e "  ${BOLD}OpenAI setup${NC}"
+      echo -e "  Default model : gpt-4o"
+      echo -e "  Other models  : gpt-4o-mini  |  gpt-4-turbo  |  o3-mini"
+      echo -e "  Get API key   → ${CYAN}https://platform.openai.com/api-keys${NC}"
+      echo ""
       prompt_input "OpenAI API Key" "OPENAI_API_KEY" --secret
+      prompt_input "Model override (Enter = gpt-4o)" "LLM_MODEL"
       ;;
-    copilot)
-      echo -e "  GitHub personal access token → https://github.com/settings/tokens"
+    3|copilot)
+      set_env "LLM_PROVIDER" "copilot"
+      echo -e "  ${BOLD}GitHub Copilot / Models setup${NC}"
+      echo -e "  Default model : gpt-4o  (via GitHub Models API)"
+      echo -e "  Other models  : gpt-4o-mini  |  o3-mini  |  claude-3.5-sonnet"
+      echo -e "  Requires      : active GitHub Copilot subscription"
+      echo -e "  Get token     → ${CYAN}https://github.com/settings/tokens${NC}"
+      echo -e "                  (scopes needed: read:user — or use a classic token)"
+      echo ""
       prompt_input "GitHub Token" "GH_TOKEN" --secret
+      prompt_input "Model override (Enter = gpt-4o)" "COPILOT_MODEL"
       ;;
-    ollama)
+    4|ollama)
+      set_env "LLM_PROVIDER" "ollama"
+      echo -e "  ${BOLD}Ollama setup${NC}  (local inference — no API key)"
+      if command -v ollama &>/dev/null; then
+        _models=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' '  ' || true)
+        [[ -n "$_models" ]] && echo -e "  Installed models: ${CYAN}${_models}${NC}"
+      else
+        warn "  ollama not in PATH — install from ${CYAN}https://ollama.com${NC}"
+        info "  Then pull a model: ollama pull llama3"
+      fi
+      echo ""
       prompt_input "Ollama URL" "OLLAMA_URL" --default "http://localhost:11434"
       prompt_input "Ollama Model" "OLLAMA_MODEL" --default "llama3"
+      prompt_input "Model override (Enter = OLLAMA_MODEL)" "LLM_MODEL"
       ;;
     *)
-      warn "Unknown provider '$LLM_CHOICE' — set the API key manually in .env"
+      warn "Invalid choice — keeping current provider '${_cur_provider:-gemini}'"
       ;;
   esac
   echo ""
