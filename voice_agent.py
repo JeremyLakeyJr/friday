@@ -91,11 +91,48 @@ _TOOL_RESULT_MAX     = 1_200   # max chars kept from any single tool result
 # Set WAKE_WORD_ENABLED=1 in .env to activate; configure the trigger phrase below.
 WAKE_WORD_ENABLED  = os.getenv("WAKE_WORD_ENABLED",  "1") == "1"
 WAKE_WORD_KEYWORD  = os.getenv("WAKE_WORD_KEYWORD",  "friday").lower()
-_WAKE_SILENCE_SECS = 0.7   # shorter silence timeout when scanning for the wake word
-_WAKE_MAX_SECS     = 3.0   # discard clip if speech runs longer than this (not a wake word)
+_WAKE_SILENCE_SECS = 0.5   # short silence timeout when scanning for the wake word
+_WAKE_MAX_SECS     = 2.0   # discard clip longer than this (likely not a wake word)
+
+# Conversation mode — after a response, stay listening without needing the wake word again.
+_CONVO_PROMPT      = "Anything else, boss?"
+CONVO_TIMEOUT      = float(os.getenv("CONVO_TIMEOUT",      "20"))  # seconds to stay in convo mode
+CONVO_PROMPT_DELAY = float(os.getenv("CONVO_PROMPT_DELAY", "5"))   # seconds before asking "anything else"
 
 # Messages evicted from context during the current turn, pending consolidation to memory.
 _pending_consolidation: list[dict] = []
+
+# ---------------------------------------------------------------------------
+# Conversation-mode state (module-level so all coroutines share it)
+# ---------------------------------------------------------------------------
+_convo_expires_at: float = 0.0            # unix ts when conversation mode ends
+_convo_prompt_task: asyncio.Task | None = None  # "anything else?" scheduler
+
+
+def _is_in_conversation() -> bool:
+    return time.time() < _convo_expires_at
+
+
+def _enter_conversation_mode() -> None:
+    global _convo_expires_at
+    _convo_expires_at = time.time() + CONVO_TIMEOUT
+
+
+def _cancel_convo_prompt() -> None:
+    global _convo_prompt_task
+    if _convo_prompt_task and not _convo_prompt_task.done():
+        _convo_prompt_task.cancel()
+    _convo_prompt_task = None
+
+
+async def _schedule_convo_prompt() -> None:
+    """After a short pause, ask 'Anything else, boss?' if still in conversation mode."""
+    try:
+        await asyncio.sleep(CONVO_PROMPT_DELAY)
+        if _is_in_conversation():
+            await _speech_q.put((_CONVO_PROMPT, False))
+    except asyncio.CancelledError:
+        pass
 
 # ---------------------------------------------------------------------------
 # Pipeline queues — created in main() so they bind to the running event loop.
@@ -109,6 +146,7 @@ _background_agent: Any       # BackgroundAgent, created in main()
 # ---------------------------------------------------------------------------
 
 _whisper = None
+_whisper_wake = None   # fast tiny.en model for wake word scanning
 _tts = None
 
 
@@ -120,6 +158,17 @@ def _get_whisper():
         _whisper = WhisperModel(WHISPER_MODEL_ID, device=WHISPER_DEVICE, compute_type="int8")
         logger.info("Whisper ready.")
     return _whisper
+
+
+def _get_whisper_wake():
+    """Load (or reuse) a tiny.en Whisper model for fast wake-word scanning."""
+    global _whisper_wake
+    if _whisper_wake is None:
+        from faster_whisper import WhisperModel
+        logger.info("Loading Whisper 'tiny.en' for wake-word scanning …")
+        _whisper_wake = WhisperModel("tiny.en", device=WHISPER_DEVICE, compute_type="int8")
+        logger.info("Wake-word model ready.")
+    return _whisper_wake
 
 
 def _get_tts():
@@ -180,16 +229,21 @@ def _record_wake_clip(mic: "MicCapture") -> np.ndarray | None:
 
 
 async def _scan_for_wake_word(mic: "MicCapture") -> None:
-    """Continuously transcribe short clips until WAKE_WORD_KEYWORD is heard."""
+    """Scan short clips with tiny.en Whisper until WAKE_WORD_KEYWORD is heard."""
     logger.debug("Wake word scanner active — listening for '%s'.", WAKE_WORD_KEYWORD)
+    wake_model = await asyncio.to_thread(_get_whisper_wake)
+
+    def _quick_transcribe(audio: np.ndarray) -> str:
+        segs, _ = wake_model.transcribe(audio, language="en", beam_size=1, vad_filter=False)
+        return " ".join(s.text for s in segs).strip().lower()
+
     while True:
         audio = await asyncio.to_thread(_record_wake_clip, mic)
         if audio is None:
             continue
-        text = await transcribe(audio)
-        if WAKE_WORD_KEYWORD in text.lower():
-            logger.info("Wake word '%s' detected (heard: '%s').", WAKE_WORD_KEYWORD, text.strip())
-            # Drain stale buffer so the wake word clip isn't re-transcribed
+        text = await asyncio.to_thread(_quick_transcribe, audio)
+        if WAKE_WORD_KEYWORD in text:
+            logger.info("Wake word detected: '%s'", text)
             while not mic._q.empty():
                 try:
                     mic._q.get_nowait()
@@ -226,7 +280,8 @@ class _ToolCollector:
                 "type": "function",
                 "function": {
                     "name": fn.__name__,
-                    "description": (fn.__doc__ or "").strip(),
+                    # First line only — keeps schemas small (full docs in skills/*.md)
+                    "description": ((fn.__doc__ or "").strip().split("\n")[0].strip())[:100],
                     "parameters": params,
                 },
             })
@@ -310,7 +365,9 @@ _history: list[dict] = []
 
 def _build_system_prompt(user_text: str = "") -> str:
     mem_ctx = get_memory_context(user_text)
-    return _BASE_SYSTEM_PROMPT + "\n\n" + _SKILLS_CONTENT + (mem_ctx or "")
+    # Skills .md omitted in voice agent to stay within the LLM token budget.
+    # The decision rules above cover all tool routing.
+    return _BASE_SYSTEM_PROMPT + (mem_ctx or "")
 
 
 def _init_history(user_text: str = "") -> None:
@@ -744,16 +801,22 @@ async def _mic_producer() -> None:
 
     with MicCapture() as mic:
         while True:
-            if WAKE_WORD_ENABLED:
+            in_convo = _is_in_conversation()
+
+            if WAKE_WORD_ENABLED and not in_convo:
                 print(f"💤  Say '{WAKE_WORD_KEYWORD}' to activate …   ", end="\r", flush=True)
                 await _scan_for_wake_word(mic)
                 print("🎙️  Wake word! Listening …             ", end="\r", flush=True)
             else:
-                print("🎤  Listening …                        ", end="\r", flush=True)
+                icon = "💬" if in_convo else "🎤"
+                print(f"{icon}  Listening …                          ", end="\r", flush=True)
 
             audio = await asyncio.to_thread(mic.record_utterance)
             if audio is None:
                 continue
+
+            # User is speaking — cancel any pending "anything else?" prompt
+            _cancel_convo_prompt()
 
             print("🔄  Transcribing …                     ", end="\r", flush=True)
             text = await transcribe(audio)
@@ -773,16 +836,20 @@ async def _brain_consumer() -> None:
             logger.error("Brain error: %s", exc, exc_info=True)
             reply = "Sorry, I ran into an error. Please try again."
         print(f"FRIDAY: {reply}\n")
+        # Enter conversation mode immediately so mic skips wake word for the follow-up
+        _enter_conversation_mode()
         await _speech_q.put((reply, False))
         _utterance_q.task_done()
 
 
 async def _tts_consumer() -> None:
     """Drain the speech queue. Always runs — never blocks mic or brain.
-    
+
     Queue items are (text, is_alert) tuples.
-    is_alert=True plays a chime before speaking (used for background task completions).
+    is_alert=True plays a chime before speaking (background task completions).
+    After a normal response, schedules the 'Anything else, boss?' follow-up.
     """
+    global _convo_prompt_task
     while True:
         item = await _speech_q.get()
         text, is_alert = item if isinstance(item, tuple) else (item, False)
@@ -790,6 +857,10 @@ async def _tts_consumer() -> None:
             if is_alert:
                 await asyncio.to_thread(_play_notification_chime)
             await speak(text)
+            # After a normal response (not the prompt itself), schedule "anything else"
+            if not is_alert and text != _CONVO_PROMPT:
+                _cancel_convo_prompt()
+                _convo_prompt_task = asyncio.create_task(_schedule_convo_prompt())
         except Exception as exc:
             logger.error("TTS error: %s", exc)
         _speech_q.task_done()
@@ -826,6 +897,7 @@ async def main() -> None:
     try:
         await asyncio.gather(
             asyncio.to_thread(_get_whisper),
+            asyncio.to_thread(_get_whisper_wake),
             asyncio.to_thread(_get_tts),
         )
     finally:
