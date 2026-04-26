@@ -916,7 +916,11 @@ async def _mic_producer() -> None:
             if WAKE_WORD_ENABLED and not in_convo:
                 print(f"💤  Say '{WAKE_WORD_KEYWORD}' to activate …   ", end="\r", flush=True)
                 await _scan_for_wake_word(mic)
-                print("🎙️  Wake word! Listening …             ", end="\r", flush=True)
+                # Scanner exits on wake word OR if conversation mode activated externally
+                if _is_in_conversation():
+                    print("💬  Continuing …                       ", end="\r", flush=True)
+                else:
+                    print("🎙️  Wake word! Listening …             ", end="\r", flush=True)
             else:
                 icon = "💬" if in_convo else "🎤"
                 print(f"{icon}  Listening …                          ", end="\r", flush=True)
@@ -925,14 +929,22 @@ async def _mic_producer() -> None:
             if audio is None:
                 continue
 
-            # User is speaking — cancel any pending "anything else?" prompt
-            _cancel_convo_prompt()
+            # Lock into conversation mode immediately so the loop-back doesn't
+            # start a wake-word scan while the brain is still thinking.
+            # (Brain will refresh this again after it replies.)
+            _enter_conversation_mode()
 
             print("🔄  Transcribing …                     ", end="\r", flush=True)
             text = await transcribe(audio)
-            if text:
-                print(f"\nYou:    {text}")
-                await _utterance_q.put(text)
+            if not text:
+                # Ambient noise / empty transcription — keep listening without
+                # cancelling the "Anything else?" prompt task.
+                continue
+
+            # Real speech confirmed — cancel pending follow-up prompt and queue.
+            _cancel_convo_prompt()
+            print(f"\nYou:    {text}")
+            await _utterance_q.put(text)
 
 
 async def _brain_consumer() -> None:
@@ -981,8 +993,9 @@ async def _tts_consumer() -> None:
             if text == _CONVO_PROMPT:
                 # Refresh conversation window so mic stays open after the prompt
                 _enter_conversation_mode()
-            elif not is_alert:
-                # Schedule "anything else?" after a normal (non-alert) response
+            elif not is_alert and _is_in_conversation():
+                # Schedule "anything else?" after a normal (non-alert) response,
+                # but only if we're still in conversation mode.
                 _cancel_convo_prompt()
                 _convo_prompt_task = asyncio.create_task(_schedule_convo_prompt())
         except Exception as exc:
