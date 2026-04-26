@@ -32,7 +32,7 @@ voice = [
 
 [project.scripts]
 friday = "server:main"
-friday_voice = "voice_agent:main"
+friday_voice = "voice_agent:run"
 friday_agent = "agent:main"
 
 [build-system]

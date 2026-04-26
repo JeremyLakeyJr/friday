@@ -478,3 +478,12 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nFRIDAY offline. Good night, boss.")
         asyncio.run(close_browser())
+
+
+def run() -> None:
+    """Sync entry point for the 'friday_voice' console script."""
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\nFRIDAY offline. Good night, boss.")
+        asyncio.run(close_browser())
