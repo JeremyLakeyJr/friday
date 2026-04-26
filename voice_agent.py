@@ -51,6 +51,7 @@ from friday.tool_registry import register_tool, select_tools, find_matching_tool
 from friday.tools import bash, browser, desktop, firefox as firefox_tools
 from friday.tools import memory as memory_tools, system, utils, web
 from friday.tools import homeassistant as ha_tools
+from friday.tools import auto_browser as auto_browser_module
 from friday.tools.browser import close_browser, current_chat_id
 from friday.tools.firefox import close_firefox
 from friday.tools.memory import get_memory_context, _sync_add
@@ -354,6 +355,7 @@ desktop.register(collector)
 firefox_tools.register(collector)
 memory_tools.register(collector)
 ha_tools.register(collector)
+auto_browser_module.register(collector)
 
 # Register the find_tools meta-tool schema (handled inline, not via collector.call)
 _FIND_TOOLS_SCHEMA = {
@@ -409,6 +411,7 @@ call find_tools(keywords="...") first — it will add matching tools to your ava
 - User shares personal info (name, prefs, projects)? → add_memory immediately (don't ask)
 - Control smart home? → ha_call_service or ha_get_state
 - Send desktop notification? → send_desktop_notification
+- Browse with human takeover / auth profiles / VNC dashboard? → auto_browser_create_session → auto_browser_navigate → auto_browser_observe
 - Need a tool not in the current set? → find_tools(keywords="...")
 
 ## Skills loaded below — full tool docs are in skills/*.md"""

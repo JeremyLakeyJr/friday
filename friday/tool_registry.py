@@ -58,6 +58,12 @@ _SYNONYMS: dict[str, list[str]] = {
     "system":      ["info", "disk", "ram", "memory", "process"],
     "firefox":     ["firefox", "navigate", "browser", "url"],
     "chrome":      ["browser", "navigate", "chromium"],
+    "auto":        ["auto_browser", "session", "managed", "vnc", "docker"],
+    "session":     ["auto_browser", "create", "browser", "managed"],
+    "vnc":         ["auto_browser", "session", "takeover", "dashboard"],
+    "managed":     ["auto_browser", "session", "browser"],
+    "profile":     ["auto_browser", "auth", "session", "cookies"],
+    "login":       ["auto_browser", "auth", "session", "cookies"],
 }
 
 
