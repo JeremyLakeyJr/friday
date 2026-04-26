@@ -189,9 +189,17 @@ class CopilotLLM:
 
     def __init__(self):
         from openai import AsyncOpenAI
+        token = (config.GH_TOKEN or "").strip()
+        # Strip any non-ASCII chars (e.g. stray shell-prompt chars from a mis-paste)
+        token = token.encode("ascii", errors="ignore").decode("ascii").strip()
+        if not token or not token.startswith(("ghp_", "gho_", "github_pat_", "ghs_")):
+            raise ValueError(
+                "GH_TOKEN in .env looks invalid. "
+                "Set it to a GitHub personal access token (ghp_… or github_pat_…)."
+            )
         self._client = AsyncOpenAI(
             base_url="https://models.inference.ai.azure.com",
-            api_key=config.GH_TOKEN,
+            api_key=token,
         )
         self._model = config.LLM_MODEL or config.COPILOT_MODEL
 
