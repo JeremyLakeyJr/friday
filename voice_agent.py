@@ -36,6 +36,8 @@ import os
 import pathlib
 import queue
 import tempfile
+import threading
+import time
 from typing import Any
 
 import numpy as np
@@ -100,9 +102,13 @@ def _get_whisper():
 def _get_tts():
     global _tts
     if _tts is None:
+        # Auto-accept Coqui TTS terms of service so the download doesn't block on
+        # an interactive stdin prompt (which looks like a freeze with no output).
+        os.environ.setdefault("COQUI_TOS_AGREED", "1")
+
         from TTS.api import TTS  # type: ignore[import]
         logger.info("Loading TTS model '%s' …", TTS_MODEL_ID)
-        _tts = TTS(model_name=TTS_MODEL_ID, progress_bar=False)
+        _tts = TTS(model_name=TTS_MODEL_ID, progress_bar=True)
         speakers = getattr(_tts, "speakers", None)
         logger.info("TTS ready. Speakers: %s", speakers[:5] if speakers else "N/A (single-speaker)")
     return _tts
@@ -414,13 +420,30 @@ async def speak(text: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
-    print("\n🤖  Loading models, boss …")
+    print("\n🤖  Loading models …  (first run downloads ~600 MB — do not close)")
 
-    # Preload both models in parallel background threads
-    await asyncio.gather(
-        asyncio.to_thread(_get_whisper),
-        asyncio.to_thread(_get_tts),
-    )
+    # Spinner so the terminal never looks frozen during download
+    _stop = threading.Event()
+    def _spin():
+        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        i = 0
+        while not _stop.is_set():
+            print(f"\r    {frames[i % len(frames)]}  loading Whisper + TTS …", end="", flush=True)
+            i += 1
+            time.sleep(0.1)
+        print("\r" + " " * 50 + "\r", end="", flush=True)
+
+    spin = threading.Thread(target=_spin, daemon=True)
+    spin.start()
+
+    try:
+        await asyncio.gather(
+            asyncio.to_thread(_get_whisper),
+            asyncio.to_thread(_get_tts),
+        )
+    finally:
+        _stop.set()
+        spin.join(timeout=1)
 
     greeting = "Friday online. What do you need, boss?"
     print(f"\nFRIDAY: {greeting}\n")

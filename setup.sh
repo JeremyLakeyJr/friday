@@ -313,35 +313,142 @@ fi
 
 # ── .env setup ────────────────────────────────────────────────────────────────
 step "Environment configuration"
-if [[ ! -f ".env" ]]; then
-  cp .env.example .env
-  success ".env created from .env.example"
-  warn "  Edit .env and set TELEGRAM_TOKEN + at least one LLM key before running."
-else
-  success ".env already exists"
-fi
 
-# Inject WHISPER_DEVICE=cuda if NVIDIA GPU found and .env doesn't already set it
-if [[ "$HAS_NVIDIA" == true && "$INSTALLED_VOICE" == true ]]; then
-  if ! grep -q "WHISPER_DEVICE" .env; then
-    echo "" >> .env
-    echo "# GPU detected by setup.sh — CUDA enabled for Whisper" >> .env
-    echo "WHISPER_DEVICE=cuda" >> .env
-    success "Added WHISPER_DEVICE=cuda to .env"
+# Bootstrap from example if .env doesn't exist yet
+[[ ! -f ".env" ]] && cp .env.example .env && success ".env created from .env.example"
+
+# ── Helpers ──
+# Write or update a single KEY=VALUE in .env (handles existing, commented, or absent keys)
+set_env() {
+  local key="$1" value="$2"
+  # Escape value for use as sed replacement (& and | need escaping)
+  local esc_value
+  esc_value=$(printf '%s' "$value" | sed 's/[&|\\]/\\&/g')
+  if grep -q "^${key}=" .env 2>/dev/null; then
+    sed -i.bak "s|^${key}=.*|${key}=${esc_value}|" .env
+  elif grep -qE "^#\s*${key}=" .env 2>/dev/null; then
+    sed -i.bak "s|^#\s*${key}=.*|${key}=${esc_value}|" .env
+  else
+    printf '\n%s=%s\n' "$key" "$value" >> .env
+  fi
+  rm -f .env.bak
+}
+
+# Read current value of KEY from .env (strips surrounding quotes)
+get_env() {
+  grep "^${1}=" .env 2>/dev/null | cut -d= -f2- | tr -d "'\""
+}
+
+# Prompt: prompt_input <display_label> <KEY> [--secret] [--default <fallback>]
+prompt_input() {
+  local label="$1" key="$2"
+  local secret=false default=""
+  shift 2
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --secret)  secret=true ;;
+      --default) default="$2"; shift ;;
+    esac
+    shift
+  done
+
+  local current
+  current=$(get_env "$key")
+  local hint="${current:-${default}}"
+  local display_hint=""
+  if [[ -n "$hint" ]]; then
+    if [[ "$secret" == true ]]; then
+      display_hint=" [****]"
+    else
+      display_hint=" [${hint}]"
+    fi
+  fi
+
+  local val
+  if [[ "$secret" == true ]]; then
+    read -r -s -p "  ${label}${display_hint}: " val; echo ""
+  else
+    read -r -p "  ${label}${display_hint}: " val
+  fi
+
+  # Use entered value, fall back to current, then default
+  val="${val:-${current:-${default}}}"
+  if [[ -n "$val" ]]; then
+    set_env "$key" "$val"
+    [[ "$secret" == false ]] && success "${key}=${val}" || success "${key} set"
+  else
+    warn "${key} left empty"
+  fi
+}
+
+if [[ "$NON_INTERACTIVE" == true ]]; then
+  info "Non-interactive mode — skipping guided .env setup. Edit .env manually."
+else
+  echo ""
+  echo -e "  ${BOLD}Guided configuration${NC} — press Enter to keep the value shown in brackets."
+  echo ""
+
+  # ── Telegram ──
+  echo -e "  ${BOLD}Telegram${NC}  (get a token from @BotFather)"
+  prompt_input "Bot Token" "TELEGRAM_TOKEN" --secret
+  echo ""
+  echo -e "  ${BOLD}Security${NC}  (restrict the bot to specific users — recommended)"
+  echo -e "  Get your Telegram user ID from @userinfobot. Comma-separate multiple IDs."
+  prompt_input "Allowed User IDs (leave empty = public)" "ALLOWED_USER_IDS"
+  echo ""
+
+  # ── LLM ──
+  echo -e "  ${BOLD}LLM Provider${NC}"
+  echo -e "  Options: ${CYAN}gemini${NC} (default) | openai | copilot | ollama"
+  prompt_input "Provider" "LLM_PROVIDER" --default "gemini"
+  LLM_CHOICE=$(get_env "LLM_PROVIDER")
+  echo ""
+  case "$LLM_CHOICE" in
+    gemini)
+      echo -e "  Google API key → https://aistudio.google.com/app/apikey"
+      prompt_input "Google API Key" "GOOGLE_API_KEY" --secret
+      ;;
+    openai)
+      echo -e "  OpenAI API key → https://platform.openai.com/api-keys"
+      prompt_input "OpenAI API Key" "OPENAI_API_KEY" --secret
+      ;;
+    copilot)
+      echo -e "  GitHub personal access token → https://github.com/settings/tokens"
+      prompt_input "GitHub Token" "GH_TOKEN" --secret
+      ;;
+    ollama)
+      prompt_input "Ollama URL" "OLLAMA_URL" --default "http://localhost:11434"
+      prompt_input "Ollama Model" "OLLAMA_MODEL" --default "llama3"
+      ;;
+    *)
+      warn "Unknown provider '$LLM_CHOICE' — set the API key manually in .env"
+      ;;
+  esac
+  echo ""
+
+  # ── Home Assistant (optional) ──
+  if ask "Configure Home Assistant? (optional)"; then
+    echo ""
+    prompt_input "Home Assistant URL" "HA_URL" --default "http://homeassistant.local:8123"
+    echo -e "  Long-lived token → HA → Profile → Security → Long-Lived Access Tokens"
+    prompt_input "Home Assistant Token" "HA_TOKEN" --secret
+    echo ""
   fi
 fi
 
-# Inject AUTO_BROWSER_URL if auto-browser was set up
+# ── Hardware-aware auto-writes ──
+if [[ "$HAS_NVIDIA" == true && "$INSTALLED_VOICE" == true ]]; then
+  if ! grep -q "^WHISPER_DEVICE=cuda" .env 2>/dev/null; then
+    set_env "WHISPER_DEVICE" "cuda"
+    success "WHISPER_DEVICE=cuda written (NVIDIA GPU detected)"
+  fi
+fi
+
 if [[ "$SETUP_AUTO_BROWSER" == true ]]; then
-  if ! grep -q "^AUTO_BROWSER_URL=" .env || grep -q "^AUTO_BROWSER_URL=$" .env; then
-    # Uncomment or append
-    sed -i.bak 's|^#\s*AUTO_BROWSER_URL=.*|AUTO_BROWSER_URL=http://127.0.0.1:8000|' .env
-    if ! grep -q "^AUTO_BROWSER_URL=" .env; then
-      echo "" >> .env
-      echo "AUTO_BROWSER_URL=http://127.0.0.1:8000" >> .env
-    fi
-    rm -f .env.bak
-    success "AUTO_BROWSER_URL set in .env"
+  current_ab=$(get_env "AUTO_BROWSER_URL")
+  if [[ -z "$current_ab" ]]; then
+    set_env "AUTO_BROWSER_URL" "http://127.0.0.1:8000"
+    success "AUTO_BROWSER_URL=http://127.0.0.1:8000 written"
   fi
 fi
 
