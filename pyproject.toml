@@ -39,6 +39,7 @@ voice = [
 friday = "server:main"
 friday_voice = "voice_agent:run"
 friday_agent = "agent:main"
+friday_all = "all_agent:run"
 
 [build-system]
 requires = ["hatchling"]

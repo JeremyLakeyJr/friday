@@ -51,8 +51,10 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 from friday.tools import web, system, utils, bash, browser, memory as memory_tools, homeassistant as ha_tools, skills as skills_module, auto_browser as auto_browser_module
+from friday.tools import desktop, firefox as firefox_tools
 from friday.config import config
 from friday.llm import get_llm
+from friday.tool_registry import register_tool, select_tools, find_matching_tools
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -133,6 +135,8 @@ system.register(collector)
 utils.register(collector)
 bash.register(collector)
 browser.register(collector)
+desktop.register(collector)
+firefox_tools.register(collector)
 memory_tools.register(collector)
 ha_tools.register(collector)
 
@@ -143,7 +147,29 @@ _skill_store = SkillStore(Path(config.FRIDAY_MCP_SKILLS_ROOT).expanduser().resol
 skills_module.register(collector, skill_store=_skill_store)
 auto_browser_module.register(collector)
 
+# find_tools meta-tool schema (handled inline, not via collector.call)
+_FIND_TOOLS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "find_tools",
+        "description": "Search for tools by capability. Use when the initial tool set doesn't have what you need.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keywords": {"type": "string"}
+            },
+            "required": ["keywords"],
+        },
+    },
+}
+
 TOOL_SCHEMAS = collector._schemas
+
+# Push all schemas into the SQLite dynamic registry (idempotent upsert)
+for _schema in TOOL_SCHEMAS:
+    register_tool(_schema)
+register_tool(_FIND_TOOLS_SCHEMA)
+
 logger.info("Registered %d tools: %s", len(TOOL_SCHEMAS), [s["function"]["name"] for s in TOOL_SCHEMAS])
 
 # ---------------------------------------------------------------------------
@@ -249,8 +275,11 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
     llm = get_llm()
     responses: list[tuple[str, bytes | None]] = []
 
+    # Start with a query-relevant subset of tools
+    current_tools = select_tools(user_text)
+
     for _ in range(10):  # max tool-call iterations per turn
-        result = await llm.chat(history, tools=TOOL_SCHEMAS)
+        result = await llm.chat(history, tools=current_tools)
 
         if result.tool_calls:
             # Append assistant message with tool calls
@@ -270,19 +299,31 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
             # Execute each tool call
             tool_results = []
             for tc in result.tool_calls:
-                logger.info("Tool call: %s(%s)", tc.name, tc.arguments)
-                tool_output = await collector.call(tc.name, tc.arguments)
+                # find_tools meta-tool: expand available tools dynamically
+                if tc.name == "find_tools":
+                    keywords = tc.arguments.get("keywords", "")
+                    extra = find_matching_tools(keywords)
+                    existing_names = {t["function"]["name"] for t in current_tools}
+                    added = [t for t in extra if t["function"]["name"] not in existing_names]
+                    current_tools = current_tools + added
+                    names = [t["function"]["name"] for t in added] or ["none found"]
+                    tool_output = f"Added tools: {', '.join(names)}"
+                    logger.info("find_tools('%s') → added %s", keywords, names)
+                    image_bytes = None
+                else:
+                    logger.info("Tool call: %s(%s)", tc.name, tc.arguments)
+                    tool_output = await collector.call(tc.name, tc.arguments)
 
-                # Handle screenshot — extract base64 image
-                image_bytes = None
-                if isinstance(tool_output, str) and tool_output.startswith("data:image/png;base64,"):
-                    try:
-                        raw_b64 = tool_output.split(",", 1)[1]
-                        image_bytes = base64.b64decode(raw_b64)
-                        tool_output = "[screenshot attached]"
-                    except Exception as exc:
-                        logger.warning("Failed to decode screenshot: %s", exc)
-                        tool_output = "[screenshot decode error]"
+                    # Handle screenshot — extract base64 image
+                    image_bytes = None
+                    if isinstance(tool_output, str) and tool_output.startswith("data:image/png;base64,"):
+                        try:
+                            raw_b64 = tool_output.split(",", 1)[1]
+                            image_bytes = base64.b64decode(raw_b64)
+                            tool_output = "[screenshot attached]"
+                        except Exception as exc:
+                            logger.warning("Failed to decode screenshot: %s", exc)
+                            tool_output = "[screenshot decode error]"
 
                 if image_bytes:
                     responses.append(("📸 Screenshot:", image_bytes))

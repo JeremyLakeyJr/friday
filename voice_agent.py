@@ -47,6 +47,7 @@ from dotenv import load_dotenv
 
 from friday.config import config
 from friday.llm import get_llm
+from friday.tool_registry import register_tool, select_tools, find_matching_tools
 from friday.tools import bash, browser, desktop, firefox as firefox_tools
 from friday.tools import memory as memory_tools, system, utils, web
 from friday.tools import homeassistant as ha_tools
@@ -312,7 +313,29 @@ firefox_tools.register(collector)
 memory_tools.register(collector)
 ha_tools.register(collector)
 
+# Register the find_tools meta-tool schema (handled inline, not via collector.call)
+_FIND_TOOLS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "find_tools",
+        "description": "Search for tools by capability. Use when the initial tool set doesn't have what you need.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keywords": {"type": "string"}
+            },
+            "required": ["keywords"],
+        },
+    },
+}
+
 TOOL_SCHEMAS = collector._schemas
+
+# Push all schemas (including find_tools) into the SQLite dynamic registry (idempotent upsert)
+for _schema in TOOL_SCHEMAS:
+    register_tool(_schema)
+register_tool(_FIND_TOOLS_SCHEMA)
+
 logger.info("Registered %d tools: %s", len(TOOL_SCHEMAS), [s["function"]["name"] for s in TOOL_SCHEMAS])
 
 # ---------------------------------------------------------------------------
@@ -463,9 +486,12 @@ async def _run_turn(user_text: str) -> str:
 
     llm = get_llm()
 
+    # Start each turn with a query-relevant subset of tools to stay under token budget.
+    current_tools = select_tools(user_text)
+
     for _ in range(MAX_TOOL_ITERS):
         _trim_history()
-        result = await llm.chat(_history, tools=TOOL_SCHEMAS)
+        result = await llm.chat(_history, tools=current_tools)
 
         if result.tool_calls:
             _history.append({
@@ -482,8 +508,19 @@ async def _run_turn(user_text: str) -> str:
             })
 
             for tc in result.tool_calls:
-                logger.info("Tool: %s(%s)", tc.name, tc.arguments)
-                tool_output = await collector.call(tc.name, tc.arguments)
+                # find_tools meta-tool: expand current_tools dynamically
+                if tc.name == "find_tools":
+                    keywords = tc.arguments.get("keywords", "")
+                    extra = find_matching_tools(keywords)
+                    existing_names = {t["function"]["name"] for t in current_tools}
+                    added = [t for t in extra if t["function"]["name"] not in existing_names]
+                    current_tools = current_tools + added
+                    names = [t["function"]["name"] for t in added] or ["none found"]
+                    tool_output = f"Added tools: {', '.join(names)}"
+                    logger.info("find_tools('%s') → added %s", keywords, names)
+                else:
+                    logger.info("Tool: %s(%s)", tc.name, tc.arguments)
+                    tool_output = await collector.call(tc.name, tc.arguments)
 
                 # Screenshots are visual — voice agent just notes them
                 if isinstance(tool_output, str) and tool_output.startswith("data:image/png;base64,"):
@@ -535,8 +572,9 @@ async def _run_isolated_turn(
     """
     history.append({"role": "user", "content": user_text})
     llm = get_llm()
+    current_tools = select_tools(user_text)
     for _ in range(max_iters):
-        result = await llm.chat(history, tools=TOOL_SCHEMAS)
+        result = await llm.chat(history, tools=current_tools)
         if result.tool_calls:
             history.append({
                 "role": "assistant",
@@ -551,8 +589,16 @@ async def _run_isolated_turn(
                 ],
             })
             for tc in result.tool_calls:
-                logger.info("BG Tool: %s(%s)", tc.name, tc.arguments)
-                tool_output = await collector.call(tc.name, tc.arguments)
+                if tc.name == "find_tools":
+                    keywords = tc.arguments.get("keywords", "")
+                    extra = find_matching_tools(keywords)
+                    existing_names = {t["function"]["name"] for t in current_tools}
+                    added = [t for t in extra if t["function"]["name"] not in existing_names]
+                    current_tools = current_tools + added
+                    tool_output = f"Added tools: {', '.join(t['function']['name'] for t in added) or 'none found'}"
+                else:
+                    logger.info("BG Tool: %s(%s)", tc.name, tc.arguments)
+                    tool_output = await collector.call(tc.name, tc.arguments)
                 if isinstance(tool_output, str) and tool_output.startswith("data:image/png;base64,"):
                     tool_output = "[screenshot taken]"
                 history.append({
