@@ -100,6 +100,26 @@ _CONVO_PROMPT      = "Anything else, boss?"
 CONVO_TIMEOUT      = float(os.getenv("CONVO_TIMEOUT",      "20"))  # seconds to stay in convo mode
 CONVO_PROMPT_DELAY = float(os.getenv("CONVO_PROMPT_DELAY", "5"))   # seconds before asking "anything else"
 
+# Phrases that exit conversation mode and return to wake-word sleep
+_EXIT_PHRASES: frozenset[str] = frozenset({
+    "that's all", "thats all", "that is all",
+    "that's it", "thats it", "that is it",
+    "no thanks", "no thank you",
+    "nothing else", "nothing more",
+    "goodbye", "good bye", "bye",
+    "we're done", "were done", "all done",
+    "never mind", "nevermind",
+    "i'm good", "im good",
+    "that will do", "that'll do",
+    "no that's all", "no that's it",
+    "not right now",
+})
+
+
+def _is_exit_phrase(text: str) -> bool:
+    t = text.lower().strip().rstrip(".,!?")
+    return t in _EXIT_PHRASES or any(p in t for p in _EXIT_PHRASES)
+
 # Messages evicted from context during the current turn, pending consolidation to memory.
 _pending_consolidation: list[dict] = []
 
@@ -109,6 +129,9 @@ _pending_consolidation: list[dict] = []
 _convo_expires_at: float = 0.0            # unix ts when conversation mode ends
 _convo_prompt_task: asyncio.Task | None = None  # "anything else?" scheduler
 
+# Set while TTS is playing — mic discards audio to avoid echo self-triggering
+_tts_playing = threading.Event()
+
 
 def _is_in_conversation() -> bool:
     return time.time() < _convo_expires_at
@@ -117,6 +140,12 @@ def _is_in_conversation() -> bool:
 def _enter_conversation_mode() -> None:
     global _convo_expires_at
     _convo_expires_at = time.time() + CONVO_TIMEOUT
+
+
+def _exit_conversation_mode() -> None:
+    global _convo_expires_at
+    _convo_expires_at = 0.0
+    _cancel_convo_prompt()
 
 
 def _cancel_convo_prompt() -> None:
@@ -230,7 +259,10 @@ def _record_wake_clip(mic: "MicCapture") -> np.ndarray | None:
 
 
 async def _scan_for_wake_word(mic: "MicCapture") -> None:
-    """Scan short clips with tiny.en Whisper until WAKE_WORD_KEYWORD is heard."""
+    """Scan short clips with tiny.en Whisper until WAKE_WORD_KEYWORD is heard.
+    
+    Returns early if conversation mode activates (e.g. brain replied while we were scanning).
+    """
     logger.debug("Wake word scanner active — listening for '%s'.", WAKE_WORD_KEYWORD)
     wake_model = await asyncio.to_thread(_get_whisper_wake)
 
@@ -239,6 +271,16 @@ async def _scan_for_wake_word(mic: "MicCapture") -> None:
         return " ".join(s.text for s in segs).strip().lower()
 
     while True:
+        # Exit immediately if conversation mode started while we were sleeping
+        if _is_in_conversation():
+            logger.debug("Wake word scanner: conversation mode active, returning.")
+            return
+
+        # Also skip scanning while TTS is playing
+        if _tts_playing.is_set():
+            await asyncio.sleep(0.05)
+            continue
+
         audio = await asyncio.to_thread(_record_wake_clip, mic)
         if audio is None:
             continue
@@ -756,6 +798,15 @@ class MicCapture:
             except queue.Empty:
                 continue
 
+            # Discard audio while TTS is playing (avoids echo self-triggering)
+            if _tts_playing.is_set():
+                # Also reset any partial speech that started before TTS
+                chunks = []
+                silent_chunks = 0
+                speech_chunks = 0
+                in_speech = False
+                continue
+
             rms = float(np.sqrt(np.mean(chunk ** 2)))
 
             if rms >= VAD_THRESHOLD:
@@ -815,8 +866,13 @@ def speak_sync(text: str) -> None:
     tts.tts_to_file(**kwargs)
 
     data, samplerate = sf.read(outpath, dtype="float32")
-    sd.play(data, samplerate=samplerate)
-    sd.wait()
+    _tts_playing.set()
+    try:
+        sd.play(data, samplerate=samplerate)
+        sd.wait()
+        time.sleep(0.2)   # brief grace period to let echo die down
+    finally:
+        _tts_playing.clear()
     pathlib.Path(outpath).unlink(missing_ok=True)
 
 
@@ -880,6 +936,16 @@ async def _brain_consumer() -> None:
     """Consume utterances through the LLM agent. Runs concurrently with TTS and mic."""
     while True:
         text = await _utterance_q.get()
+
+        # Exit conversation mode if user says "that's all / bye / no thanks / etc."
+        if _is_exit_phrase(text):
+            _exit_conversation_mode()
+            farewell = "Got it, boss. Call me when you need me."
+            print(f"FRIDAY: {farewell}\n")
+            await _speech_q.put((farewell, False))
+            _utterance_q.task_done()
+            continue
+
         print("🧠  Thinking …                         ", end="\r", flush=True)
         try:
             reply = await _run_turn(text)
@@ -899,6 +965,7 @@ async def _tts_consumer() -> None:
     Queue items are (text, is_alert) tuples.
     is_alert=True plays a chime before speaking (background task completions).
     After a normal response, schedules the 'Anything else, boss?' follow-up.
+    When 'Anything else?' itself is spoken, refreshes the conversation window.
     """
     global _convo_prompt_task
     while True:
@@ -908,8 +975,11 @@ async def _tts_consumer() -> None:
             if is_alert:
                 await asyncio.to_thread(_play_notification_chime)
             await speak(text)
-            # After a normal response (not the prompt itself), schedule "anything else"
-            if not is_alert and text != _CONVO_PROMPT:
+            if text == _CONVO_PROMPT:
+                # Refresh conversation window so mic stays open after the prompt
+                _enter_conversation_mode()
+            elif not is_alert:
+                # Schedule "anything else?" after a normal (non-alert) response
                 _cancel_convo_prompt()
                 _convo_prompt_task = asyncio.create_task(_schedule_convo_prompt())
         except Exception as exc:
