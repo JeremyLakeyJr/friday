@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -315,9 +316,20 @@ async def _run_agent_turn(chat_id: int, user_text: str) -> list[tuple[str, bytes
 # Telegram handlers
 # ---------------------------------------------------------------------------
 
+def _time_greeting() -> str:
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "Good morning ☀️"
+    if 12 <= hour < 17:
+        return "Good afternoon 🌤️"
+    if 17 <= hour < 21:
+        return "Good evening 🌆"
+    return "Good night 🌙"
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 *Friday online.*\n\n"
+        f"👋 *{_time_greeting()} — Friday online.*\n\n"
         "I'm your autonomous AI agent. I can:\n"
         "• Run bash commands on this machine\n"
         "• Control a web browser (Playwright)\n"
