@@ -2,7 +2,7 @@
 LLM factory — builds an async chat client based on LLM_PROVIDER env var.
 
 Supported providers:
-  gemini   — Google Gemini via google-generativeai (GOOGLE_API_KEY)
+  gemini   — Google Gemini via google-genai (GOOGLE_API_KEY)
   openai   — OpenAI chat completions (OPENAI_API_KEY)
   copilot  — GitHub Copilot via GitHub Models API (GH_TOKEN)
   ollama   — Self-hosted Ollama (OLLAMA_URL, OLLAMA_MODEL, no API key)
@@ -72,19 +72,16 @@ async def _openai_chat(
 
 class GeminiLLM:
     def __init__(self):
-        import google.generativeai as genai
-        genai.configure(api_key=config.GOOGLE_API_KEY)
+        from google import genai
+        self._client = genai.Client(api_key=config.GOOGLE_API_KEY)
         self._model_name = config.LLM_MODEL or "gemini-2.5-flash"
-        self._genai = genai
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
-        import asyncio
-        import google.generativeai as genai
-        from google.generativeai import protos
+        from google.genai import types
 
-        # Separate system prompt from conversation history
         system_text = ""
-        gemini_history = []
+        history: list[dict] = []
+
         for m in messages:
             role = m.get("role")
             content = m.get("content") or ""
@@ -93,81 +90,78 @@ class GeminiLLM:
                 system_text = content
 
             elif role == "user":
-                gemini_history.append({"role": "user", "parts": [content]})
+                history.append({"role": "user", "parts": [{"text": content}]})
 
             elif role == "assistant":
-                # May contain text and/or tool_calls
-                parts = []
+                parts: list[Any] = []
                 if content:
-                    parts.append(content)
+                    parts.append({"text": content})
                 for tc in m.get("tool_calls") or []:
                     fn = tc["function"]
                     try:
                         args = json.loads(fn["arguments"])
                     except Exception:
                         args = {}
-                    parts.append(protos.Part(
-                        function_call=protos.FunctionCall(name=fn["name"], args=args)
+                    parts.append(types.Part(
+                        function_call=types.FunctionCall(name=fn["name"], args=args)
                     ))
                 if parts:
-                    gemini_history.append({"role": "model", "parts": parts})
+                    history.append({"role": "model", "parts": parts})
 
             elif role == "tool":
-                # Tool response — emit as a user-role function_response turn
-                gemini_history.append({
+                history.append({
                     "role": "user",
-                    "parts": [protos.Part(
-                        function_response=protos.FunctionResponse(
-                            name=m.get("name") or m.get("tool_call_id", "tool"),
-                            response={"result": content},
-                        )
-                    )],
+                    "parts": [types.Part(function_response=types.FunctionResponse(
+                        name=m.get("name") or m.get("tool_call_id", "tool"),
+                        response={"result": content},
+                    ))],
                 })
+
+        # Split history: everything before the last turn goes into chat history;
+        # the last user/tool turn is sent as the new message.
+        if history:
+            *prior, last = history
+            send_message = last["parts"]
+        else:
+            prior = []
+            send_message = [{"text": "Hello"}]
 
         # Build tool declarations
         gemini_tools = None
         if tools:
-            from google.generativeai.types import FunctionDeclaration, Tool as GeminiTool
-            declarations = []
-            for t in tools:
-                fn = t.get("function", {})
-                declarations.append(FunctionDeclaration(
-                    name=fn.get("name", ""),
-                    description=fn.get("description", ""),
-                    parameters=fn.get("parameters", {}),
-                ))
-            gemini_tools = [GeminiTool(function_declarations=declarations)]
+            declarations = [
+                types.FunctionDeclaration(
+                    name=t.get("function", {}).get("name", ""),
+                    description=t.get("function", {}).get("description", ""),
+                    parameters=t.get("function", {}).get("parameters", {}),
+                )
+                for t in tools
+            ]
+            gemini_tools = [types.Tool(function_declarations=declarations)]
 
-        # Rebuild model with system instruction (stateless per call)
-        model = genai.GenerativeModel(
-            self._model_name,
+        cfg = types.GenerateContentConfig(
             system_instruction=system_text or None,
+            tools=gemini_tools,
         )
 
-        if gemini_history:
-            chat = model.start_chat(history=gemini_history[:-1])
-            last_parts = gemini_history[-1]["parts"]
-        else:
-            chat = model.start_chat(history=[])
-            last_parts = ["Hello"]
-
-        send_kwargs: dict[str, Any] = {"message": last_parts}
-        if gemini_tools:
-            send_kwargs["tools"] = gemini_tools
-
-        response = await asyncio.to_thread(chat.send_message, **send_kwargs)
+        chat = self._client.aio.chats.create(
+            model=self._model_name,
+            history=prior,
+            config=cfg,
+        )
+        response = await chat.send_message(message=send_message)
 
         tool_calls = []
         text = ""
-        for part in response.parts:
-            if hasattr(part, "function_call") and part.function_call.name:
+        for part in response.candidates[0].content.parts:
+            if part.function_call and part.function_call.name:
                 fc = part.function_call
                 tool_calls.append(ToolCall(
                     id=f"{fc.name}-{id(fc)}",
                     name=fc.name,
                     arguments=dict(fc.args),
                 ))
-            elif hasattr(part, "text") and part.text:
+            elif part.text:
                 text += part.text
 
         return ChatResult(content=text, tool_calls=tool_calls)
