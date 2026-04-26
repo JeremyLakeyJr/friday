@@ -1,1 +1,21 @@
-{}
+{
+  "auto-browser": {
+    "active": true,
+    "backup_path": null,
+    "capabilities": [
+      "browser",
+      "web-automation",
+      "screenshots"
+    ],
+    "checksum": "ee39e6fe03325d9275135c96925c80b0c7526d9112bfaec8e077d1b21d902c4f",
+    "description": "Full headless Chromium browser with persistent named sessions via the auto-browser service. Supports navigation, clicking, typing, scrolling, and screenshots across multiple independent sessions.",
+    "id": "auto-browser",
+    "installed_at": "2026-04-26T07:22:55.245946+00:00",
+    "min_server_version": "0.2.0",
+    "name": "Auto Browser (Persistent Sessions)",
+    "path": "skills/installed/auto-browser.md",
+    "source": "bundled",
+    "source_type": "bundled",
+    "version": "1.0.0"
+  }
+}
