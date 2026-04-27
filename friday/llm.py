@@ -216,7 +216,29 @@ class OllamaLLM:
         self._model = config.LLM_MODEL or config.OLLAMA_MODEL
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> ChatResult:
-        kwargs: dict[str, Any] = {"model": self._model, "messages": messages}
+        # Ollama's pydantic model requires tool_calls.function.arguments to be a dict.
+        # OpenAI format stores them as JSON strings — normalize before sending.
+        normalized: list[dict] = []
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                m = dict(m)
+                fixed_tcs = []
+                for tc in m["tool_calls"]:
+                    tc = dict(tc)
+                    fn = dict(tc.get("function", {}))
+                    args = fn.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except (json.JSONDecodeError, ValueError):
+                            args = {}
+                    fn["arguments"] = args
+                    tc["function"] = fn
+                    fixed_tcs.append(tc)
+                m["tool_calls"] = fixed_tcs
+            normalized.append(m)
+
+        kwargs: dict[str, Any] = {"model": self._model, "messages": normalized}
         if tools:
             kwargs["tools"] = tools
 

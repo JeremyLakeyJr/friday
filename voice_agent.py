@@ -1005,6 +1005,13 @@ async def _brain_consumer() -> None:
             reply = await _run_turn(text)
         except Exception as exc:
             logger.error("Brain error: %s", exc, exc_info=True)
+            # If history is corrupted (bad tool message order, etc.), reset it
+            # so subsequent turns don't keep failing on the same stale entry.
+            err_str = str(exc).lower()
+            if "tool" in err_str or "validation" in err_str or "messages" in err_str:
+                global _history
+                _history = []
+                logger.info("History reset after bad-history error.")
             reply = "Sorry, I ran into an error. Please try again."
         print(f"FRIDAY: {reply}\n")
         # Enter conversation mode immediately so mic skips wake word for the follow-up
