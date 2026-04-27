@@ -455,6 +455,23 @@ def _init_history(user_text: str = "") -> None:
         _history[0] = {"role": "system", "content": _build_system_prompt(user_text)}
 
 
+def _sanitize_tool_orphans() -> None:
+    """Remove tool-role messages not immediately preceded by an assistant with tool_calls.
+
+    The OpenAI API rejects any history where a 'tool' message doesn't follow
+    an 'assistant' message that contains 'tool_calls'.  This can happen when
+    history is trimmed and the paired assistant message falls off the window.
+    """
+    i = 1
+    while i < len(_history):
+        if _history[i].get("role") == "tool":
+            prev = _history[i - 1]
+            if not (isinstance(prev.get("tool_calls"), list) and prev["tool_calls"]):
+                _history.pop(i)
+                continue
+        i += 1
+
+
 def _trim_history() -> None:
     """Trim to MAX_HISTORY messages, then trim if over char budget.
     
@@ -473,6 +490,12 @@ def _trim_history() -> None:
         dropped = _history.pop(1)
         if dropped.get("role") in ("user", "assistant"):
             _pending_consolidation.append(dropped)
+        # If we dropped an assistant with tool_calls, co-drop its tool results.
+        if dropped.get("tool_calls"):
+            while len(_history) > 1 and _history[1].get("role") == "tool":
+                _history.pop(1)
+    # Final safety pass — catches any orphans introduced by the slice above.
+    _sanitize_tool_orphans()
 
 
 async def _consolidate_to_memory(messages: list[dict]) -> None:
