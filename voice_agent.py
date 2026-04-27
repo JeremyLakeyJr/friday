@@ -35,6 +35,7 @@ import logging
 import os
 import pathlib
 import queue
+import re
 import tempfile
 import threading
 import time
@@ -95,6 +96,9 @@ WAKE_WORD_ENABLED  = os.getenv("WAKE_WORD_ENABLED",  "1") == "1"
 WAKE_WORD_KEYWORD  = os.getenv("WAKE_WORD_KEYWORD",  "friday").lower()
 _WAKE_SILENCE_SECS = 0.5   # short silence timeout when scanning for the wake word
 _WAKE_MAX_SECS     = 2.0   # discard clip longer than this (likely not a wake word)
+
+# Regex for stripping URLs from TTS text (slashes/colons aren't pronounceable)
+_URL_RE = re.compile(r'https?://\S+|www\.\S+')
 
 # Conversation mode — after a response, stay listening without needing the wake word again.
 _CONVO_PROMPT      = "Anything else, boss?"
@@ -848,8 +852,20 @@ async def transcribe(audio: np.ndarray) -> str:
 # TTS — Coqui TTS
 # ---------------------------------------------------------------------------
 
+def _clean_for_tts(text: str) -> str:
+    """Strip content the TTS model can't pronounce (URLs, markdown links)."""
+    # Collapse markdown links [label](url) → just the label
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    # Remove bare URLs
+    text = _URL_RE.sub('', text)
+    # Collapse extra whitespace left behind
+    text = re.sub(r'  +', ' ', text).strip()
+    return text
+
+
 def speak_sync(text: str) -> None:
     """Synthesize text and play through speakers (blocking)."""
+    text = _clean_for_tts(text)
     if not text.strip():
         return
 

@@ -33,13 +33,28 @@ def register(mcp, *, config=None) -> None:
 
     @mcp.tool()
     async def auto_browser_create_session(name: str, start_url: str = "about:blank") -> dict:
-        """Create a new browser session. Returns session info including session_id."""
+        """Create a new browser session. Returns session info including session_id.
+        If a session already exists (409), it is reused and navigated to start_url."""
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 f"{base_url}/sessions",
                 json={"name": name, "start_url": start_url},
                 headers=_headers(),
             )
+            if response.status_code == 409:
+                # A session already exists — list and reuse the first one
+                list_resp = await client.get(f"{base_url}/sessions", headers=_headers())
+                list_resp.raise_for_status()
+                sessions = list_resp.json()
+                if sessions:
+                    session = sessions[0]
+                    if start_url and start_url != "about:blank":
+                        await client.post(
+                            f"{base_url}/sessions/{session['id']}/actions/navigate",
+                            json={"url": start_url},
+                            headers=_headers(),
+                        )
+                    return {**session, "reused": True}
             response.raise_for_status()
             return response.json()
 

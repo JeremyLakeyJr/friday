@@ -18,8 +18,10 @@ Environment:
 """
 
 import asyncio
+import fcntl
 import logging
 import os
+import pathlib
 import sys
 
 from dotenv import load_dotenv
@@ -33,6 +35,27 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("friday-all")
+
+# ---------------------------------------------------------------------------
+# Single-instance PID lock — prevents two Friday processes conflicting over
+# the Telegram bot token (which causes recurring 409 getUpdates errors).
+# ---------------------------------------------------------------------------
+
+_PID_FILE = pathlib.Path(os.getenv("XDG_RUNTIME_DIR", "/tmp")) / "friday_all.pid"
+_pid_lock_fh = None  # keep file handle open so the lock is held for the lifetime
+
+
+def _acquire_pid_lock() -> bool:
+    """Try to acquire an exclusive lock on the PID file. Returns True on success."""
+    global _pid_lock_fh
+    try:
+        _pid_lock_fh = open(_PID_FILE, "w")
+        fcntl.flock(_pid_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _pid_lock_fh.write(str(os.getpid()))
+        _pid_lock_fh.flush()
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +99,11 @@ async def run_telegram() -> None:
     logger.info("Telegram bot starting…")
     async with app:
         await app.start()
+        # Clear any leftover webhook so long-polling doesn't race with a prior instance
+        try:
+            await app.bot.delete_webhook(drop_pending_updates=True)
+        except Exception as exc:
+            logger.debug("delete_webhook: %s", exc)
         await app.updater.start_polling(drop_pending_updates=True)
         # Yield control — voice pipeline runs concurrently alongside this.
         # The task is cancelled by asyncio.gather when the voice pipeline exits.
@@ -118,6 +146,14 @@ async def _run_all() -> None:
     if not telegram_token and not has_voice:
         logger.error(
             "Neither TELEGRAM_TOKEN nor audio device available. Nothing to run."
+        )
+        sys.exit(1)
+
+    if not _acquire_pid_lock():
+        logger.error(
+            "Another Friday instance is already running (PID file locked: %s). "
+            "Stop it first with: kill $(cat %s)",
+            _PID_FILE, _PID_FILE,
         )
         sys.exit(1)
 
