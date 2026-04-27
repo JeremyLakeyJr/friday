@@ -43,7 +43,7 @@ services:
     environment:
       API_BEARER_TOKEN: ${AUTO_BROWSER_TOKEN:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      BROWSER_WS_ENDPOINT_FILE: /data/browser-profile/browser-ws-endpoint.txt
+      BROWSER_WS_ENDPOINT_FILE: /data/profile/browser-ws-endpoint.txt
       TAKEOVER_URL: ${TAKEOVER_URL:-http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale}
       ARTIFACT_ROOT: /data/artifacts
       UPLOAD_ROOT: /data/uploads
@@ -55,8 +55,8 @@ services:
       MEMORY_ROOT: /data/memory
       MCP_TOOL_PROFILE: ${MCP_TOOL_PROFILE:-curated}
       METRICS_ENABLED: ${METRICS_ENABLED:-true}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,::1}
-      REQUEST_RATE_LIMIT_ENABLED: ${REQUEST_RATE_LIMIT_ENABLED:-true}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-*}
+      REQUEST_RATE_LIMIT_ENABLED: ${REQUEST_RATE_LIMIT_ENABLED:-false}
       MAX_SESSIONS: ${MAX_SESSIONS:-1}
       OCR_ENABLED: ${OCR_ENABLED:-true}
     volumes:

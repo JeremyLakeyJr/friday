@@ -81,6 +81,17 @@ async def run_telegram() -> None:
     )
     import agent as ag
 
+    # Suppress the updater's own ERROR-level log for Conflict — it's already
+    # handled by _error_handler below and is non-fatal noise.
+    import logging as _logging
+
+    class _SuppressConflict(_logging.Filter):
+        def filter(self, record: _logging.LogRecord) -> bool:  # type: ignore[override]
+            return "Conflict" not in record.getMessage()
+
+    for _name in ("telegram.ext.Updater", "telegram.ext._utils.networkloop"):
+        _logging.getLogger(_name).addFilter(_SuppressConflict())
+
     async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         err = context.error
         if isinstance(err, (TimedOut, NetworkError, Conflict)):
